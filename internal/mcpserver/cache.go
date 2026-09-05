@@ -12,6 +12,10 @@ const (
 	mediaCacheMaxAge = 6 * time.Hour
 )
 
+func init() {
+	cleanupStaleMediaCache()
+}
+
 // cleanupStaleMediaCache is best-effort crash recovery for temporary ChatGPT
 // input files. Normal requests remove their cache directory via defer; this
 // sweep handles process crashes or host restarts that happen before cleanup.
