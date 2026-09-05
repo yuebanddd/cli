@@ -34,7 +34,6 @@ type generateVideoInput struct {
 type queryResultInput struct {
 	ThreadID string `json:"thread_id"`
 	RunID    string `json:"run_id"`
-	Subdir   string `json:"subdir,omitempty" jsonschema:"relative download folder under the MCP output directory"`
 }
 
 func (s *service) registerGenerationTools(server *mcp.Server) {
@@ -56,9 +55,9 @@ func (s *service) registerGenerationTools(server *mcp.Server) {
 
 	mcp.AddTool(server, toolDefinition(
 		"pippit_query_result",
-		"Query and download generated media",
-		"Query a direct Xiaoyunque generation run. When complete, download returned image/video artifacts into the server-controlled output directory and return both source URLs and local paths.",
-		false, false, true, true, nil,
+		"Query generated media links",
+		"Query a Xiaoyunque generation run and return completion state plus Xiaoyunque-hosted image/video URLs and metadata. Large generated media is not downloaded or proxied by the MCP server.",
+		true, false, true, true, nil,
 		"正在查询小云雀生成结果…", "已获取小云雀生成结果",
 	), s.handleQueryResult)
 }
@@ -137,26 +136,21 @@ func (s *service) handleGenerateVideo(ctx context.Context, _ *mcp.CallToolReques
 	}, nil
 }
 
-func (s *service) handleQueryResult(ctx context.Context, _ *mcp.CallToolRequest, input queryResultInput) (*mcp.CallToolResult, generate_video.QueryResultResult, error) {
+func (s *service) handleQueryResult(ctx context.Context, _ *mcp.CallToolRequest, input queryResultInput) (*mcp.CallToolResult, generate_video.ResultLinksResult, error) {
 	input.ThreadID = strings.TrimSpace(input.ThreadID)
 	input.RunID = strings.TrimSpace(input.RunID)
 	if input.ThreadID == "" {
-		return nil, generate_video.QueryResultResult{}, fmt.Errorf("thread_id is required")
+		return nil, generate_video.ResultLinksResult{}, fmt.Errorf("thread_id is required")
 	}
 	if input.RunID == "" {
-		return nil, generate_video.QueryResultResult{}, fmt.Errorf("run_id is required")
+		return nil, generate_video.ResultLinksResult{}, fmt.Errorf("run_id is required")
 	}
-	outputDir, err := s.outputDirectory(input.Subdir)
-	if err != nil {
-		return nil, generate_video.QueryResultResult{}, err
-	}
-	result, err := generate_video.QueryResult(ctx, &generate_video.QueryResultOptions{
-		ThreadID:    input.ThreadID,
-		RunID:       input.RunID,
-		DownloadDir: outputDir,
+	result, err := generate_video.QueryResultLinks(ctx, &generate_video.ResultLinksOptions{
+		ThreadID: input.ThreadID,
+		RunID:    input.RunID,
 	}, s.runner)
 	if err != nil {
-		return nil, generate_video.QueryResultResult{}, err
+		return nil, generate_video.ResultLinksResult{}, err
 	}
 	return nil, *result, nil
 }
