@@ -11,6 +11,7 @@ import (
 )
 
 type generateImageInput struct {
+	IdempotencyKey     string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
 	Prompt             string      `json:"prompt" jsonschema:"image creation or editing instruction"`
 	Images             []FileInput `json:"images,omitempty" jsonschema:"reference images from the current ChatGPT conversation"`
 	Model              string      `json:"model" jsonschema:"Xiaoyunque image model name"`
@@ -20,15 +21,16 @@ type generateImageInput struct {
 }
 
 type generateVideoInput struct {
-	Prompt       string      `json:"prompt" jsonschema:"video creation instruction; include the storyboard, motion, camera, duration, and desired result"`
-	Images       []FileInput `json:"images,omitempty" jsonschema:"up to nine reference images, including images generated in this ChatGPT conversation"`
-	Videos       []FileInput `json:"videos,omitempty" jsonschema:"up to three reference videos"`
-	Audios       []FileInput `json:"audios,omitempty" jsonschema:"up to three mp3/wav reference audio files"`
-	DurationSec  *int        `json:"duration_sec,omitempty" jsonschema:"requested video duration in seconds"`
-	Ratio        string      `json:"ratio,omitempty" jsonschema:"requested aspect ratio such as 9:16 or 16:9"`
-	Model        string      `json:"model,omitempty" jsonschema:"Xiaoyunque video model name"`
-	Resolution   string      `json:"resolution,omitempty" jsonschema:"requested output resolution"`
-	GenerateType *int64      `json:"generate_type,omitempty" jsonschema:"provider-specific generation type"`
+	IdempotencyKey string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Prompt         string      `json:"prompt" jsonschema:"video creation instruction; include the storyboard, motion, camera, duration, and desired result"`
+	Images         []FileInput `json:"images,omitempty" jsonschema:"up to nine reference images, including images generated in this ChatGPT conversation"`
+	Videos         []FileInput `json:"videos,omitempty" jsonschema:"up to three reference videos"`
+	Audios         []FileInput `json:"audios,omitempty" jsonschema:"up to three mp3/wav reference audio files"`
+	DurationSec    *int        `json:"duration_sec,omitempty" jsonschema:"requested video duration in seconds"`
+	Ratio          string      `json:"ratio,omitempty" jsonschema:"requested aspect ratio such as 9:16 or 16:9"`
+	Model          string      `json:"model,omitempty" jsonschema:"Xiaoyunque video model name"`
+	Resolution     string      `json:"resolution,omitempty" jsonschema:"requested output resolution"`
+	GenerateType   *int64      `json:"generate_type,omitempty" jsonschema:"provider-specific generation type"`
 }
 
 type queryResultInput struct {
@@ -37,7 +39,7 @@ type queryResultInput struct {
 }
 
 func (s *service) registerGenerationTools(server *mcp.Server) {
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_generate_image",
 		"Generate image with Xiaoyunque",
 		"Generate or edit images with Xiaoyunque. ChatGPT already has native image generation, but this tool preserves full CLI parity and can use current-chat reference images. This operation may consume Xiaoyunque credits.",
@@ -45,7 +47,7 @@ func (s *service) registerGenerationTools(server *mcp.Server) {
 		"正在向小云雀提交生图任务…", "小云雀生图任务已提交",
 	), s.handleGenerateImage)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_generate_video",
 		"Generate video with Xiaoyunque",
 		"Generate a Xiaoyunque video from text and optional ChatGPT-generated images, reference videos, or audio. Use the images parameter when the user says to turn an image from this conversation into video. This operation consumes Xiaoyunque credits.",
@@ -53,7 +55,7 @@ func (s *service) registerGenerationTools(server *mcp.Server) {
 		"正在向小云雀提交视频任务…", "小云雀视频任务已提交",
 	), s.handleGenerateVideo)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_query_result",
 		"Query generated media links",
 		"Query a Xiaoyunque generation run and return completion state plus Xiaoyunque-hosted image/video URLs and metadata. Large generated media is not downloaded or proxied by the MCP server.",

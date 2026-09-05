@@ -2,9 +2,11 @@ package mcpserver
 
 import (
 	"fmt"
+	"github.com/Pippit-dev/pippit-cli/internal/publicapp"
 	"io"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/Pippit-dev/pippit-cli/internal/common"
 	servercore "github.com/Pippit-dev/pippit-cli/internal/mcpserver"
@@ -21,11 +23,13 @@ func NewCommand(stdout, stderr io.Writer, runner *common.Runner) *cobra.Command 
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	cmd.AddCommand(newServeCommand(stdout, stderr, runner))
+	cmd.AddCommand(newMigrateCommand(stdout, stderr))
 	return cmd
 }
 
 func newServeCommand(stdout, stderr io.Writer, runner *common.Runner) *cobra.Command {
 	options := servercore.DefaultOptions()
+	mode := "local"
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Serve Pippit tools over Streamable HTTP MCP",
@@ -33,8 +37,21 @@ func newServeCommand(stdout, stderr io.Writer, runner *common.Runner) *cobra.Com
 			"The server reuses pippit-tool-cli login credentials and accepts ChatGPT file references for image-to-video workflows.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			if mode == "public" {
+				cfg, err := publicapp.ConfigFromEnv()
+				if err != nil {
+					return err
+				}
+				if cmd.Flags().Changed("listen") {
+					cfg.Listen = options.Listen
+				}
+				return publicapp.Run(ctx, cfg, stdout)
+			}
+			if mode != "local" {
+				return fmt.Errorf("mode must be local or public")
+			}
 			if err := servercore.Run(ctx, options, runner, stdout); err != nil {
 				return fmt.Errorf("run MCP server: %w", err)
 			}
@@ -45,6 +62,7 @@ func newServeCommand(stdout, stderr io.Writer, runner *common.Runner) *cobra.Com
 	cmd.SetErr(stderr)
 
 	flags := cmd.Flags()
+	flags.StringVar(&mode, "mode", mode, "local uses CLI login; public requires PostgreSQL and per-user OAuth")
 	flags.StringVar(&options.Listen, "listen", options.Listen, "listen address, for example 127.0.0.1:8787")
 	flags.StringVar(&options.Path, "path", options.Path, "Streamable HTTP MCP endpoint path")
 	flags.StringVar(&options.HealthPath, "health-path", options.HealthPath, "health-check endpoint path")

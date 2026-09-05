@@ -10,17 +10,19 @@ import (
 )
 
 type videoSuperResolutionInput struct {
+	IdempotencyKey   string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
 	Videos           []FileInput `json:"videos" jsonschema:"exactly one video from the current ChatGPT conversation"`
 	OutputResolution string      `json:"output_resolution" jsonschema:"target resolution: 720p, 1080p, 2k, or 4k"`
 	ToolVersion      string      `json:"tool_version,omitempty" jsonschema:"optional processing version: standard, professional_v1, or professional_v2"`
 }
 
 type eraseVideoSubtitleInput struct {
-	Videos []FileInput `json:"videos" jsonschema:"exactly one video whose subtitles should be erased"`
+	IdempotencyKey string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Videos         []FileInput `json:"videos" jsonschema:"exactly one video whose subtitles should be erased"`
 }
 
 func (s *service) registerVideoTools(server *mcp.Server) {
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_video_super_resolution",
 		"Improve video resolution",
 		"Upload one reference video and submit Xiaoyunque's video super-resolution tool. This operation may consume Xiaoyunque credits.",
@@ -28,7 +30,7 @@ func (s *service) registerVideoTools(server *mcp.Server) {
 		"正在提交视频超分任务…", "视频超分任务已提交",
 	), s.handleVideoSuperResolution)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_erase_video_subtitle",
 		"Erase video subtitles",
 		"Upload one video and submit Xiaoyunque's subtitle-erasing tool. This operation may consume Xiaoyunque credits.",

@@ -38,6 +38,7 @@ var ToolNames = []string{
 }
 
 type service struct {
+	public     PublicPolicy
 	runner     *common.Runner
 	options    Options
 	downloader *mediaDownloader
@@ -60,9 +61,12 @@ func (s *service) newProtocolServer(logger *slog.Logger) *mcp.Server {
 				"Prefer ChatGPT's native image generation for ordinary image creation, then pass the approved generated image through a tool file parameter when the user wants Xiaoyunque to animate or edit it. " +
 				"ChatGPT-generated or user-uploaded files may be passed through file parameters. " +
 				"Generation and editing tools can consume Xiaoyunque credits; call them only after the user has requested or approved the operation. " +
-				"Use get/query tools to inspect asynchronous results and reuse thread_id for revisions.",
+				"Submit once; poll many. Never resubmit a generation when the user asks about progress. Use get/query tools to inspect asynchronous results and reuse thread_id for revisions.",
 		},
 	)
+	if s.public != nil {
+		s.registerAccountStatus(server)
+	}
 	s.registerCommonTools(server)
 	s.registerGenerationTools(server)
 	s.registerShortDramaTools(server)

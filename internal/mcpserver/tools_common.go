@@ -25,7 +25,8 @@ type authStatusOutput struct {
 }
 
 type uploadMediaInput struct {
-	Files []FileInput `json:"files" jsonschema:"one or more images, videos, mp3/wav audio files, documents, or PDFs to upload"`
+	IdempotencyKey string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Files          []FileInput `json:"files" jsonschema:"one or more images, videos, mp3/wav audio files, documents, or PDFs to upload"`
 }
 
 type uploadedAsset struct {
@@ -39,13 +40,15 @@ type uploadMediaOutput struct {
 }
 
 type nestSubmitInput struct {
-	Message  string      `json:"message" jsonschema:"natural-language creation or editing instruction for Xiaoyunque NestAgent"`
-	ThreadID string      `json:"thread_id,omitempty" jsonschema:"existing Xiaoyunque thread ID for a follow-up revision"`
-	AssetIDs []string    `json:"asset_ids,omitempty" jsonschema:"already-uploaded Xiaoyunque asset IDs"`
-	Files    []FileInput `json:"files,omitempty" jsonschema:"reference images, videos, or mp3/wav audio from the ChatGPT conversation"`
+	IdempotencyKey string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Message        string      `json:"message" jsonschema:"natural-language creation or editing instruction for Xiaoyunque NestAgent"`
+	ThreadID       string      `json:"thread_id,omitempty" jsonschema:"existing Xiaoyunque thread ID for a follow-up revision"`
+	AssetIDs       []string    `json:"asset_ids,omitempty" jsonschema:"already-uploaded Xiaoyunque asset IDs"`
+	Files          []FileInput `json:"files,omitempty" jsonschema:"reference images, videos, or mp3/wav audio from the ChatGPT conversation"`
 }
 
 type submitRunOutput struct {
+	Status           string          `json:"status,omitempty"`
 	ThreadID         string          `json:"thread_id"`
 	RunID            string          `json:"run_id"`
 	WebThreadLink    string          `json:"web_thread_link,omitempty"`
@@ -86,7 +89,7 @@ type downloadResultOutput struct {
 }
 
 func (s *service) registerCommonTools(server *mcp.Server) {
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_auth_status",
 		"Check Xiaoyunque login",
 		"Check whether this MCP server can use the CLI's existing Xiaoyunque/Pippit login. Secrets are never returned.",
@@ -94,7 +97,7 @@ func (s *service) registerCommonTools(server *mcp.Server) {
 		"正在检查小云雀登录状态…", "已检查小云雀登录状态",
 	), s.handleAuthStatus)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_upload_media",
 		"Upload media to Xiaoyunque",
 		"Upload ChatGPT-generated images or user-provided media/documents to Xiaoyunque and return durable asset IDs. This does not start generation by itself.",
@@ -102,7 +105,7 @@ func (s *service) registerCommonTools(server *mcp.Server) {
 		"正在上传素材到小云雀…", "素材已上传到小云雀",
 	), s.handleUploadMedia)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_nest_submit",
 		"Create or revise with Xiaoyunque",
 		"Send a conversational creation/editing request to Xiaoyunque NestAgent. Reference files can come directly from the current ChatGPT conversation. This operation may consume Xiaoyunque credits.",
@@ -110,7 +113,7 @@ func (s *service) registerCommonTools(server *mcp.Server) {
 		"正在向小云雀提交创作任务…", "小云雀创作任务已提交",
 	), s.handleNestSubmit)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_get_thread",
 		"Get Xiaoyunque thread",
 		"Read the current messages, progress, and artifacts for a Xiaoyunque thread or run.",
@@ -118,7 +121,7 @@ func (s *service) registerCommonTools(server *mcp.Server) {
 		"正在查询小云雀会话…", "已获取小云雀会话",
 	), s.handleGetThread)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_list_thread_files",
 		"List Xiaoyunque thread files",
 		"List downloadable files produced inside a Xiaoyunque thread.",
@@ -126,7 +129,7 @@ func (s *service) registerCommonTools(server *mcp.Server) {
 		"正在列出小云雀产物…", "已列出小云雀产物",
 	), s.handleListThreadFiles)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_download_result",
 		"Download Xiaoyunque result",
 		"Download one HTTPS Xiaoyunque result into the MCP server's controlled output directory. The server blocks private-network URLs and path traversal by default.",

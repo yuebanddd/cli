@@ -10,18 +10,20 @@ import (
 )
 
 type shortDramaSubmitInput struct {
-	Message  string      `json:"message" jsonschema:"short-drama creation, continuation, rewriting, character, or episode instruction"`
-	ThreadID string      `json:"thread_id,omitempty" jsonschema:"existing short-drama thread ID for a follow-up"`
-	AssetIDs []string    `json:"asset_ids,omitempty" jsonschema:"already-uploaded Xiaoyunque document asset IDs"`
-	Files    []FileInput `json:"files,omitempty" jsonschema:"optional .doc, .docx, or .txt reference documents"`
+	IdempotencyKey string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Message        string      `json:"message" jsonschema:"short-drama creation, continuation, rewriting, character, or episode instruction"`
+	ThreadID       string      `json:"thread_id,omitempty" jsonschema:"existing short-drama thread ID for a follow-up"`
+	AssetIDs       []string    `json:"asset_ids,omitempty" jsonschema:"already-uploaded Xiaoyunque document asset IDs"`
+	Files          []FileInput `json:"files,omitempty" jsonschema:"optional .doc, .docx, or .txt reference documents"`
 }
 
 type shortDramaUploadInput struct {
-	Files []FileInput `json:"files" jsonschema:"one or more .doc, .docx, or .txt short-drama documents"`
+	IdempotencyKey string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Files          []FileInput `json:"files" jsonschema:"one or more .doc, .docx, or .txt short-drama documents"`
 }
 
 func (s *service) registerShortDramaTools(server *mcp.Server) {
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_short_drama_submit",
 		"Create or revise a short drama",
 		"Submit a short-drama creation or revision request. It supports an existing thread and reference documents. This operation may consume Xiaoyunque credits.",
@@ -29,7 +31,7 @@ func (s *service) registerShortDramaTools(server *mcp.Server) {
 		"正在提交小云雀短剧任务…", "小云雀短剧任务已提交",
 	), s.handleShortDramaSubmit)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_short_drama_upload",
 		"Upload short-drama documents",
 		"Upload .doc, .docx, or .txt documents for a Xiaoyunque short-drama workflow and return asset IDs.",

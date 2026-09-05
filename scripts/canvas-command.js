@@ -774,7 +774,7 @@ async function runCanvasCommand(args, options = {}) {
   const input = parseInputJSON(parsed, cwd);
   const route = routes.get(parsed.commandName);
   validatePublicCommandInput(route, input);
-  const nativeClient = new NativeCanvasClient(options.nativeInvocation, { cwd, stderr });
+  const nativeClient = options.nativeClient || new NativeCanvasClient(options.nativeInvocation, { cwd, stderr });
   const authStatus = await nativeClient.ensureCanvasAccess(parsed.canvasId);
   const requiresDurableCheckpoint = CHECKPOINT_COMMANDS.has(parsed.commandName) ||
     (parsed.commandName === "apply_mutations" && input.checkpointBefore === true);
@@ -782,26 +782,26 @@ async function runCanvasCommand(args, options = {}) {
     throw new Error("checkpoint command 需要通过网页登录，以便安全隔离跨进程状态");
   }
   const { assetRuntime, loader } = createCanvasAssetRuntime({ nativeClient, sdk });
-  const checkpointStore = authStatus.credential_scope
+  const checkpointStore = options.checkpoints || (authStatus.credential_scope
     ? createFileCheckpointStore({
         canvasId: parsed.canvasId,
         credentialScope: authStatus.credential_scope,
         stateDirectory: options.stateDirectory,
       })
-    : undefined;
+    : undefined);
 
   let executionError;
   let saveError;
   let serializedResult;
   const allocatedAssetIds = [];
   let standalone;
-  const persistence = authStatus.credential_scope
+  const persistence = options.persistence || (authStatus.credential_scope
     ? createFilePersistence({
         canvasId: parsed.canvasId,
         credentialScope: authStatus.credential_scope,
         stateDirectory: options.stateDirectory,
       })
-    : createMemoryPersistence();
+    : createMemoryPersistence());
   try {
     standalone = sdk.createXyqCanvasCommandRuntime({
       canvasId: parsed.canvasId,

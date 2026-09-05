@@ -40,17 +40,26 @@ const (
 )
 
 type materializedFiles struct {
-	Paths []string
-	Dir   string
+	Paths   []string
+	Dir     string
+	release func()
 }
 
 func (files *materializedFiles) Cleanup() {
+	if files != nil && files.release != nil {
+		files.release()
+		return
+	}
 	if files != nil && files.Dir != "" {
 		_ = os.RemoveAll(files.Dir)
 	}
 }
 
 type mediaDownloader struct {
+	cache                     *MediaCache
+	fakeIP                    bool
+	publicInputs              bool
+	lookupIP                  func(context.Context, string) ([]net.IPAddr, error)
 	client                    *http.Client
 	maxFileBytes              int64
 	allowPrivateFileURLs      bool
@@ -97,11 +106,18 @@ func (d *mediaDownloader) materialize(ctx context.Context, inputs []FileInput, k
 	if len(inputs) == 0 {
 		return &materializedFiles{Paths: []string{}}, nil
 	}
-	dir, err := os.MkdirTemp("", "pippit-mcp-files-*")
+	var dir string
+	var release func()
+	var err error
+	if d.cache != nil {
+		dir, release, err = d.cache.allocate(len(inputs))
+	} else {
+		dir, err = os.MkdirTemp("", "pippit-mcp-files-*")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create temporary media directory: %w", err)
 	}
-	result := &materializedFiles{Dir: dir, Paths: make([]string, 0, len(inputs))}
+	result := &materializedFiles{Dir: dir, release: release, Paths: make([]string, 0, len(inputs))}
 	defer func() {
 		if err != nil {
 			result.Cleanup()
@@ -159,6 +175,12 @@ func (d *mediaDownloader) materializeOne(ctx context.Context, dir string, index 
 	}
 	if name == "" || name == "." {
 		name = fmt.Sprintf("input-%03d%s", index+1, extensionForMIME(mimeType))
+	}
+	if d.publicInputs {
+		if err := validatePublicMedia(kind, detectedType, filepath.Ext(name)); err != nil {
+			_ = os.Remove(temporaryPath)
+			return "", err
+		}
 	}
 	if err := validateMaterializedFile(kind, mimeType, filepath.Ext(name)); err != nil {
 		_ = os.Remove(temporaryPath)
@@ -378,6 +400,9 @@ func (d *mediaDownloader) validateRemoteURL(raw string) (*url.URL, error) {
 	if parsed.Scheme != "https" && !(d.allowPrivateFileURLs && parsed.Scheme == "http") {
 		return nil, fmt.Errorf("file URL must use HTTPS")
 	}
+	if d.publicInputs && (!isChatGPTFileHost(parsed.Hostname()) || (parsed.Port() != "" && parsed.Port() != "443") || parsed.Fragment != "") {
+		return nil, fmt.Errorf("input URL must use an approved ChatGPT file host on HTTPS port 443")
+	}
 	if !d.allowPrivateFileURLs {
 		if ip := net.ParseIP(parsed.Hostname()); ip != nil && !isPublicIP(ip) {
 			return nil, fmt.Errorf("file URL resolves to a non-public IP address")
@@ -394,14 +419,25 @@ func (d *mediaDownloader) dialContext(ctx context.Context, network, address stri
 	if err != nil {
 		return nil, fmt.Errorf("parse download address: %w", err)
 	}
-	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	lookup := d.lookupIP
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
+	}
+	addresses, err := lookup(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("resolve download host %q: %w", host, err)
+	}
+	// Validate the complete answer before dialing, preventing mixed public/private
+	// DNS answers from bypassing policy. Pin the selected IP; TLS keeps the hostname.
+	for _, candidate := range addresses {
+		if !d.allowedAddress(host, port, candidate.IP) {
+			return nil, fmt.Errorf("download host resolved to blocked address")
+		}
 	}
 	var lastErr error
 	dialer := &net.Dialer{Timeout: 20 * time.Second, KeepAlive: 30 * time.Second}
 	for _, candidate := range addresses {
-		if !isPublicIP(candidate.IP) {
+		if !d.allowedAddress(host, port, candidate.IP) {
 			lastErr = fmt.Errorf("download host %q resolved to blocked address %s", host, candidate.IP)
 			continue
 		}
@@ -522,4 +558,30 @@ type downloadOutput struct {
 	OutputPath    string `json:"output_path"`
 	AlreadyExists bool   `json:"already_exists,omitempty"`
 	Bytes         int64  `json:"bytes"`
+}
+
+func isChatGPTFileHost(host string) bool {
+	host = strings.ToLower(host)
+	return strings.HasSuffix(host, ".oaiusercontent.com") && len(host) > len(".oaiusercontent.com") && !strings.HasSuffix(host, ".")
+}
+func (d *mediaDownloader) allowedAddress(host, port string, ip net.IP) bool {
+	if isPublicIP(ip) {
+		return true
+	}
+	_, fake, _ := net.ParseCIDR("198.18.0.0/15")
+	return d.fakeIP && port == "443" && net.ParseIP(host) == nil && isChatGPTFileHost(host) && fake.Contains(ip)
+}
+func validatePublicMedia(kind fileKind, detected, ext string) error {
+	detected = normalizeMIMEType(detected)
+	ext = strings.ToLower(ext)
+	allowed := map[string][]string{
+		"image/jpeg": {".jpg", ".jpeg"}, "image/png": {".png"}, "image/gif": {".gif"}, "image/bmp": {".bmp"}, "image/webp": {".webp"},
+		"video/mp4": {".mp4", ".m4v", ".mov"}, "video/quicktime": {".mov"}, "video/webm": {".webm", ".mkv"}, "video/avi": {".avi"},
+		"audio/mpeg": {".mp3"}, "audio/wave": {".wav"}, "audio/wav": {".wav"}, "audio/x-wav": {".wav"},
+		"application/pdf": {".pdf"}, "text/plain": {".txt"}, "application/zip": {".docx"}, "application/octet-stream": {".doc"},
+	}
+	if !isOneOf(ext, allowed[detected]...) {
+		return fmt.Errorf("file content does not match an allowed MIME/extension")
+	}
+	return validateMaterializedFile(kind, detected, ext)
 }

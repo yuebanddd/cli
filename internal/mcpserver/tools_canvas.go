@@ -17,6 +17,7 @@ import (
 )
 
 type canvasCreateInput struct {
+	IdempotencyKey      string `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
 	Title               string `json:"title,omitempty" jsonschema:"personal Canvas project title, up to 50 characters"`
 	RequestID           string `json:"request_id,omitempty" jsonschema:"caller-generated request ID; generated securely when omitted"`
 	Wait                bool   `json:"wait,omitempty" jsonschema:"wait for the overview artifact to become ready"`
@@ -25,7 +26,8 @@ type canvasCreateInput struct {
 }
 
 type canvasAllocateInput struct {
-	Count int `json:"count" jsonschema:"number of asset IDs to reserve, from 1 to 5000"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Count          int    `json:"count" jsonschema:"number of asset IDs to reserve, from 1 to 5000"`
 }
 
 type canvasGetInput struct {
@@ -39,12 +41,14 @@ type canvasGetOutput struct {
 }
 
 type canvasApplyInput struct {
+	IdempotencyKey              string         `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
 	ProjectID                   string         `json:"project_id,omitempty" jsonschema:"personal novel project ID as a positive decimal string"`
 	Request                     map[string]any `json:"request" jsonschema:"Canvas BatchPatch request containing exactly one transaction"`
 	AllowNonAcknowledgedResults bool           `json:"allow_non_acknowledged_results,omitempty" jsonschema:"return transport-level outcomes when a transaction is not acknowledged"`
 }
 
 type canvasUploadInput struct {
+	IdempotencyKey      string      `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
 	Files               []FileInput `json:"files" jsonschema:"one or more images, videos, audio files, documents, or PDFs from the current ChatGPT conversation"`
 	PollIntervalSeconds int         `json:"poll_interval_seconds,omitempty" jsonschema:"asset visibility polling interval in seconds; defaults to 1"`
 	TimeoutSeconds      int         `json:"timeout_seconds,omitempty" jsonschema:"maximum asset visibility wait in seconds; defaults to 120"`
@@ -59,9 +63,10 @@ type canvasCommandDescribeInput struct {
 }
 
 type canvasCommandRunInput struct {
-	Command  string         `json:"command" jsonschema:"registered Canvas SDK command name"`
-	CanvasID string         `json:"canvas_id" jsonschema:"target Canvas asset ID"`
-	Input    map[string]any `json:"input" jsonschema:"command-specific structured input"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty" jsonschema:"stable operation key; required in public mode; reuse unchanged on retries"`
+	Command        string         `json:"command" jsonschema:"registered Canvas SDK command name"`
+	CanvasID       string         `json:"canvas_id" jsonschema:"target Canvas asset ID"`
+	Input          map[string]any `json:"input" jsonschema:"command-specific structured input"`
 }
 
 type canvasCommandOutput struct {
@@ -70,7 +75,7 @@ type canvasCommandOutput struct {
 }
 
 func (s *service) registerCanvasTools(server *mcp.Server) {
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_create",
 		"Create Pippit Canvas",
 		"Create a personal Pippit novel Canvas project. The returned IDs are durable; do not blindly repeat a request whose outcome is ambiguous.",
@@ -78,7 +83,7 @@ func (s *service) registerCanvasTools(server *mcp.Server) {
 		"正在创建小云雀画布…", "小云雀画布已创建",
 	), s.handleCanvasCreate)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_allocate",
 		"Allocate Canvas asset IDs",
 		"Reserve unique Pippit asset IDs for assets that a later Canvas transaction will create.",
@@ -86,7 +91,7 @@ func (s *service) registerCanvasTools(server *mcp.Server) {
 		"正在分配画布资产 ID…", "画布资产 ID 已分配",
 	), s.handleCanvasAllocate)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_get",
 		"Get Canvas assets",
 		"Read one or more Pippit Canvas assets by durable asset ID.",
@@ -94,7 +99,7 @@ func (s *service) registerCanvasTools(server *mcp.Server) {
 		"正在读取画布资产…", "已读取画布资产",
 	), s.handleCanvasGet)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_apply",
 		"Apply Canvas transaction",
 		"Apply one atomic Canvas patch transaction. This mutates durable Canvas state and must only be called after the user has approved the intended changes.",
@@ -102,7 +107,7 @@ func (s *service) registerCanvasTools(server *mcp.Server) {
 		"正在应用画布事务…", "画布事务已应用",
 	), s.handleCanvasApply)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_upload",
 		"Upload files to Canvas",
 		"Upload ChatGPT-generated images or user files into personal Canvas assets and wait until they are queryable.",
@@ -110,7 +115,7 @@ func (s *service) registerCanvasTools(server *mcp.Server) {
 		"正在上传画布素材…", "画布素材已上传",
 	), s.handleCanvasUpload)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_command_list",
 		"List Canvas SDK commands",
 		"List semantic Canvas SDK commands exposed by the npm-installed pippit-tool-cli wrapper.",
@@ -118,7 +123,7 @@ func (s *service) registerCanvasTools(server *mcp.Server) {
 		"正在读取画布命令目录…", "已读取画布命令目录",
 	), s.handleCanvasCommandList)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_command_describe",
 		"Describe Canvas SDK command",
 		"Read the parameter contract for one semantic Canvas SDK command exposed by the npm-installed wrapper.",
@@ -126,7 +131,7 @@ func (s *service) registerCanvasTools(server *mcp.Server) {
 		"正在读取画布命令说明…", "已读取画布命令说明",
 	), s.handleCanvasCommandDescribe)
 
-	mcp.AddTool(server, toolDefinition(
+	addTool(s, server, toolDefinition(
 		"pippit_canvas_command_run",
 		"Run Canvas SDK command",
 		"Run one registered semantic Canvas SDK mutation through the npm-installed wrapper. This mutates durable Canvas state and never permits arbitrary shell commands.",
@@ -277,6 +282,23 @@ func (s *service) handleCanvasCommandRun(ctx context.Context, _ *mcp.CallToolReq
 }
 
 func (s *service) runCanvasCommand(ctx context.Context, args ...string) (*mcp.CallToolResult, canvasCommandOutput, error) {
+	if s.public != nil {
+		executor, ok := s.public.(interface {
+			RunCanvasCommand(context.Context, []string) ([]byte, error)
+		})
+		if !ok {
+			return nil, canvasCommandOutput{}, fmt.Errorf("public Canvas executor required")
+		}
+		b, err := executor.RunCanvasCommand(ctx, args)
+		if err != nil {
+			return nil, canvasCommandOutput{}, err
+		}
+		var data any
+		if err = json.Unmarshal(b, &data); err != nil {
+			return nil, canvasCommandOutput{}, err
+		}
+		return nil, canvasCommandOutput{Data: data}, nil
+	}
 	commandArgs := append([]string{"canvas", "command"}, args...)
 	command := exec.CommandContext(ctx, s.options.CLICommand, commandArgs...)
 	var stdout, stderr bytes.Buffer
