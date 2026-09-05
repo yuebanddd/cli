@@ -48,6 +48,15 @@ func TestRootRegistersCanvas(t *testing.T) {
 	}
 }
 
+func TestRootRegistersChatGPTApp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	root := NewRootCommand(&stdout, &stderr)
+	command, _, err := root.Find([]string{"chatgpt-app"})
+	if err != nil || command == nil || command.Name() != "chatgpt-app" {
+		t.Fatalf("root.Find(%q) = %#v, %v", "chatgpt-app", command, err)
+	}
+}
+
 func TestRootRegistersTopLevelBrowserAuthCommands(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root := NewRootCommand(&stdout, &stderr)

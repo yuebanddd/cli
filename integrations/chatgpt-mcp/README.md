@@ -1,21 +1,35 @@
-# ChatGPT 私有 App / MCP Bridge
+# ChatGPT 私有 App / MCP Bridge（Go）
 
-这个目录提供一个面向 ChatGPT 的私有 MCP 服务，把当前仓库的小云雀 / Pippit 能力暴露为 ChatGPT 可调用工具。
+本集成使用仓库原生 Go 代码，把现有小云雀 / Pippit 能力暴露为 ChatGPT 可调用的 Streamable HTTP MCP 工具。
 
-## 目标
+## 设计目标
 
-第一版只解决最关键的闭环：
+第一版只验证最关键的闭环：
 
-1. 在 ChatGPT 对话中先用原生能力讨论创意、分镜、脚本并生成参考图。
-2. 用户明确要求生成视频后，ChatGPT 调用 `create_video`。
-3. ChatGPT 将当前对话里的图片/视频/音频文件作为工具文件参数传给 MCP。
-4. MCP 下载这些临时文件，上传到小云雀，得到 `asset_id`。
-5. MCP 调用 `/api/biz/v1/skill/submit_run` 提交生成任务。
-6. ChatGPT 用 `get_video_status` 查询进度和产物；修改时使用 `continue_video` 复用原 thread。
+1. 在 ChatGPT 对话中讨论创意、脚本和分镜，并使用 ChatGPT 原生能力生成或修改参考图。
+2. 用户明确要求制作视频后，ChatGPT 调用 `create_video`。
+3. ChatGPT 把当前对话里的图片、视频或音频作为文件参数传给 MCP。
+4. MCP 临时下载文件，调用仓库现有上传客户端写入小云雀资产库并取得 `asset_id`。
+5. MCP 复用现有 `submit_run` / `get_thread` 实现提交、继续修改和查询结果。
 
-仓库现有 `xyq-skill` 已经具备上传素材、提交 run 和查询 thread 的 OpenAPI 能力，本集成只是把它们改造成远程 MCP 形态，方便直接在 ChatGPT 聊天框里使用。
+实现位置：
 
-## 工具
+```text
+cmd/chatgpt_app/             Cobra 命令
+internal/chatgpt_app/        MCP Server、ChatGPT 文件交接、小云雀编排
+integrations/chatgpt-mcp/    本说明文档
+```
+
+运行时不依赖 Node.js。
+
+## 为什么使用 Go
+
+- 与主仓库保持单一技术栈和单一二进制。
+- 直接复用 `pippit-tool-cli login` 写入系统 Keyring 的登录态；也兼容 `XYQ_ACCESS_KEY`。
+- 直接复用仓库现有 HTTP 客户端、鉴权边界、multipart 上传、`SubmitRun` 和 `GetThread`。
+- 继续沿用 GoReleaser、`go test ./...` 和 `go vet ./...`，不增加 Node 运行时与第二套锁文件。
+
+## MCP 工具
 
 ### `create_video`
 
@@ -23,36 +37,59 @@
 
 输入：
 
-- `prompt`: 视频创作需求。
-- `files`: 可选。ChatGPT 当前对话中的参考图片、视频或音频。
+- `prompt`：视频创作要求。
+- `files`：可选，ChatGPT 当前对话中的参考图片、视频或 mp3/wav 音频。
 
-注意：这是写操作，会实际消耗小云雀 credits。
+这是写操作，会上传素材并可能消耗小云雀 credits。
 
 ### `continue_video`
 
-在已有小云雀 thread 中继续提出修改需求，可附加新的聊天文件。
+在已有小云雀 thread 中提交修改，可附加新的聊天文件。
 
 ### `get_video_status`
 
-只读查询任务状态、消息和产物信息。
+只读查询已有任务的可读进度和结果信息。
 
 ## ChatGPT 文件交接
 
-工具 schema 使用 OpenAI 插件/MCP 的 `_meta["openai/fileParams"]` 声明 `files` 是文件参数。ChatGPT 调用工具时会提供临时下载 URL、file id、MIME type 等信息；服务端只在当前调用中下载后立即上传小云雀，不应把临时下载 URL 当作长期资源保存。
+`create_video` 和 `continue_video` 的工具元数据声明：
 
-这是本分支最重要的 PoC：**ChatGPT 原生生成/上传的图片 → MCP → 小云雀 asset → 视频生成**。
+```text
+_meta["openai/fileParams"] = ["files"]
+```
+
+`files` 中每个对象包含：
+
+```json
+{
+  "download_url": "ChatGPT 提供的临时 HTTPS 地址",
+  "file_id": "文件 ID",
+  "mime_type": "image/png",
+  "file_name": "reference.png"
+}
+```
+
+服务只在当前调用中下载该临时文件，完成小云雀上传后立即删除本地临时副本，不保存临时 URL。下载器限制为 HTTPS、公开 IP、最多 5 次重定向和单文件 200 MB，以降低 SSRF 与超大文件风险。
 
 ## 本地启动
 
+先使用现有 CLI 登录：
+
 ```bash
-cd integrations/chatgpt-mcp
-npm install
+pippit-tool-cli login
+pippit-tool-cli status
+```
 
+也可以在无 Keyring 的服务端环境中使用：
+
+```bash
 export XYQ_ACCESS_KEY="你的 Access Key"
-# 可选
-export XYQ_OPENAPI_BASE="https://xyq.jianying.com"
+```
 
-npm start
+启动原生 Go MCP Server：
+
+```bash
+pippit-tool-cli chatgpt-app serve
 ```
 
 默认监听：
@@ -61,9 +98,30 @@ npm start
 http://127.0.0.1:8787/mcp
 ```
 
+自定义监听地址与路径：
+
+```bash
+pippit-tool-cli chatgpt-app serve \
+  --listen 127.0.0.1:8787 \
+  --path /mcp
+```
+
+可选地为 MCP endpoint 设置独立 Bearer Token；该 token 不是小云雀 Access Key：
+
+```bash
+export PIPPIT_CHATGPT_MCP_TOKEN="生成一个足够长的随机值"
+pippit-tool-cli chatgpt-app serve
+```
+
+健康检查：
+
+```text
+GET /healthz
+```
+
 ## 暴露 HTTPS
 
-ChatGPT 连接的 MCP endpoint 需要公网可访问的 HTTPS 地址。开发阶段可以使用你自己的 Tunnel / 反向代理，例如将：
+ChatGPT 连接地址必须是公网可访问的 HTTPS endpoint。开发阶段可通过 Cloudflare Tunnel 或反向代理，把：
 
 ```text
 https://your-domain.example/mcp
@@ -75,56 +133,38 @@ https://your-domain.example/mcp
 http://127.0.0.1:8787/mcp
 ```
 
-Access Key 必须只存在服务端环境变量中，不要放到 ChatGPT tool 参数、前端代码、仓库或日志里。
+不要把 `XYQ_ACCESS_KEY` 放入 ChatGPT 工具参数、前端代码、仓库或日志。公网部署还需要在 MCP 前增加合适的用户鉴权；当前静态 Bearer Token 仅用于私有 PoC。
 
-## ChatGPT 中测试
+## 端到端测试
 
-开发/私有阶段，把 HTTPS MCP endpoint 连接到 ChatGPT 的开发者插件/私有插件配置中，然后测试：
-
-```text
-先帮我生成一张高级感香水广告参考图。
-```
-
-图片确认后：
+先在 ChatGPT 中生成一张广告参考图，确认后说：
 
 ```text
-就用刚才这张图，让小云雀做成 15 秒 9:16 剧情广告。镜头先慢慢推进，再围绕瓶身旋转，最后品牌定格。
+就用刚才这张图，让小云雀制作一条 15 秒、9:16 的剧情广告。镜头先缓慢推进，再绕产品旋转，最后品牌定格。
 ```
 
-预期 ChatGPT 会把刚才的图片作为 `files` 参数交给 `create_video`。
+预期流程：
 
-随后可询问：
+```text
+ChatGPT 文件参数
+  -> create_video
+  -> 小云雀 upload_file
+  -> asset_id
+  -> submit_run
+  -> thread_id / run_id
+```
+
+随后询问：
 
 ```text
 现在生成到哪一步了？
 ```
 
-ChatGPT 应调用 `get_video_status`。
-
-继续修改：
-
-```text
-沿用这个版本，把前三秒节奏加快，结尾多停留两秒。
-```
-
-ChatGPT 应调用 `continue_video` 并复用原来的 `thread_id`。
+ChatGPT 应调用 `get_video_status`。继续修改时调用 `continue_video` 并复用原 `thread_id`。
 
 ## 当前边界
 
-- 第一版专注通用视频创作，不把短剧专用工作流混进同一个工具。
-- 不把小云雀 Key 暴露给 ChatGPT；服务端统一持有 `XYQ_ACCESS_KEY`。
-- 文件上传沿用小云雀当前的 200 MB 单文件限制及支持的 image/video/mp3/wav 类型。
-- 任务是异步的；提交和查询分成不同工具，避免长时间阻塞一次 ChatGPT 工具调用。
-- 第一版没有自定义 UI，先验证纯聊天体验。需要任务卡片、进度条、视频预览时再增加 MCP App UI。
-- 若未来给多个小云雀账户/用户使用，需要增加 OAuth/用户到 Access Key 的安全映射，不能继续共享单一服务端 Key。
-
-## 下一阶段建议
-
-PoC 验证后再增加：
-
-- tool output 中抽取标准化视频 URL / 封面 / artifact metadata；
-- ChatGPT 内的生成任务卡片和进度 UI；
-- 用户级鉴权、多账号和额度隔离；
-- 短剧专用 `create_short_drama` 工具；
-- webhook/后台任务，减少聊天中手动查询进度；
-- 部署配置和 CI。
+- 第一版专注通用视频创作，不混入短剧专用工作流。
+- 提交和查询分开，避免一次 MCP 调用长期阻塞。
+- 第一版没有自定义 ChatGPT UI，先验证纯聊天和文件交接。
+- 多用户部署仍需 OAuth、用户与小云雀凭据映射、额度隔离和审计。
