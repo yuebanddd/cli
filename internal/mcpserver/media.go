@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -20,16 +19,13 @@ import (
 )
 
 // FileInput is the portable file-reference shape accepted by MCP tools.
-// ChatGPT file handoff normally supplies download_url and file_id. data_url and
-// base64 are supported for small local clients and tests.
+// ChatGPT file handoff supplies download_url and file_id, plus optional MIME
+// type and original file name. Keep this shape aligned with OpenAI file parameters.
 type FileInput struct {
 	DownloadURL string `json:"download_url" jsonschema:"temporary HTTPS URL supplied by ChatGPT or another MCP client"`
-	URL         string `json:"url,omitempty" jsonschema:"HTTPS URL containing the file"`
-	DataURL     string `json:"data_url,omitempty" jsonschema:"data URL containing a small file"`
-	Base64      string `json:"base64,omitempty" jsonschema:"base64-encoded file bytes; mime_type is required"`
 	FileID      string `json:"file_id" jsonschema:"opaque client file identifier used for tracing; not used as a credential"`
-	FileName    string `json:"file_name,omitempty" jsonschema:"original file name including extension"`
 	MIMEType    string `json:"mime_type,omitempty" jsonschema:"file MIME type, for example image/png"`
+	FileName    string `json:"file_name,omitempty" jsonschema:"original file name including extension"`
 }
 
 type fileKind uint8
@@ -178,103 +174,38 @@ func (d *mediaDownloader) materializeOne(ctx context.Context, dir string, index 
 }
 
 func (d *mediaDownloader) openInput(ctx context.Context, input FileInput) (io.ReadCloser, string, string, error) {
-	sources := 0
-	for _, value := range []string{input.DownloadURL, input.URL, input.DataURL, input.Base64} {
-		if strings.TrimSpace(value) != "" {
-			sources++
-		}
-	}
-	if sources == 0 {
+	rawURL := strings.TrimSpace(input.DownloadURL)
+	if rawURL == "" {
 		if strings.TrimSpace(input.FileID) != "" {
 			return nil, "", "", fmt.Errorf("file_id %q has no download_url; the MCP host must provide downloadable file bytes", input.FileID)
 		}
-		return nil, "", "", fmt.Errorf("one of download_url, url, data_url, or base64 is required")
+		return nil, "", "", fmt.Errorf("download_url is required")
 	}
-	if sources != 1 {
-		return nil, "", "", fmt.Errorf("provide exactly one file source")
-	}
-
-	if rawURL := firstNonEmpty(input.DownloadURL, input.URL); rawURL != "" {
-		parsed, err := d.validateRemoteURL(rawURL)
-		if err != nil {
-			return nil, "", "", err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-		if err != nil {
-			return nil, "", "", fmt.Errorf("build file download request: %w", err)
-		}
-		req.Header.Set("Accept", "*/*")
-		req.Header.Set("User-Agent", d.serverControlledUserAgent)
-		resp, err := d.client.Do(req)
-		if err != nil {
-			return nil, "", "", fmt.Errorf("download file: %w", err)
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			defer resp.Body.Close()
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-			return nil, "", "", fmt.Errorf("download file returned HTTP %d", resp.StatusCode)
-		}
-		if resp.ContentLength > d.maxFileBytes {
-			resp.Body.Close()
-			return nil, "", "", fmt.Errorf("file is %d bytes; maximum is %d", resp.ContentLength, d.maxFileBytes)
-		}
-		name := fileNameFromResponse(resp, parsed)
-		return resp.Body, resp.Header.Get("Content-Type"), name, nil
-	}
-
-	if strings.TrimSpace(input.DataURL) != "" {
-		contentType, payload, err := decodeDataURL(input.DataURL)
-		if err != nil {
-			return nil, "", "", err
-		}
-		if int64(len(payload)) > d.maxFileBytes {
-			return nil, "", "", fmt.Errorf("decoded data URL exceeds %d bytes", d.maxFileBytes)
-		}
-		return io.NopCloser(strings.NewReader(string(payload))), contentType, input.FileName, nil
-	}
-
-	if strings.TrimSpace(input.MIMEType) == "" {
-		return nil, "", "", fmt.Errorf("mime_type is required with base64 input")
-	}
-	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(strings.TrimSpace(input.Base64)))
-	return io.NopCloser(decoder), input.MIMEType, input.FileName, nil
-}
-
-func decodeDataURL(raw string) (string, []byte, error) {
-	raw = strings.TrimSpace(raw)
-	if !strings.HasPrefix(strings.ToLower(raw), "data:") {
-		return "", nil, fmt.Errorf("invalid data URL")
-	}
-	comma := strings.IndexByte(raw, ',')
-	if comma < 0 {
-		return "", nil, fmt.Errorf("invalid data URL: missing comma")
-	}
-	metadata := raw[len("data:"):comma]
-	payload := raw[comma+1:]
-	parts := strings.Split(metadata, ";")
-	contentType := "text/plain"
-	if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
-		contentType = strings.TrimSpace(parts[0])
-	}
-	isBase64 := false
-	for _, part := range parts[1:] {
-		if strings.EqualFold(strings.TrimSpace(part), "base64") {
-			isBase64 = true
-			break
-		}
-	}
-	if !isBase64 {
-		decoded, err := url.PathUnescape(payload)
-		if err != nil {
-			return "", nil, fmt.Errorf("decode data URL: %w", err)
-		}
-		return contentType, []byte(decoded), nil
-	}
-	decoded, err := base64.StdEncoding.DecodeString(payload)
+	parsed, err := d.validateRemoteURL(rawURL)
 	if err != nil {
-		return "", nil, fmt.Errorf("decode base64 data URL: %w", err)
+		return nil, "", "", err
 	}
-	return contentType, decoded, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("build file download request: %w", err)
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", d.serverControlledUserAgent)
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("download file: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return nil, "", "", fmt.Errorf("download file returned HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > d.maxFileBytes {
+		resp.Body.Close()
+		return nil, "", "", fmt.Errorf("file is %d bytes; maximum is %d", resp.ContentLength, d.maxFileBytes)
+	}
+	name := fileNameFromResponse(resp, parsed)
+	return resp.Body, resp.Header.Get("Content-Type"), name, nil
 }
 
 func copyWithLimit(dst io.Writer, src io.Reader, limit int64) (int64, error) {
