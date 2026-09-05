@@ -35,6 +35,7 @@
 - `docker build -f deploy/public/Dockerfile -t pippit-public:local .`：通过。
 - `docker compose -f deploy/public/compose.yaml config --quiet`：使用非敏感 fixture 环境通过。
 - 容器执行 `mcp migrate up`：通过；非 root、只读根文件系统、有限 tmpfs 下启动 Public：healthy；`GET /readyz` 返回 `{"ready":true}`；匿名 `/mcp` 返回 401 和受保护资源 metadata URL。
+- 推送后 PR `statusCheckRollup` 为空；查询仓库 Actions 配置返回 HTTP 403（缺少 Actions policies 读取权限）。没有远端 CI 通过的证据，以上自动测试结果均来自实际本地/容器执行。
 - `PIPPIT_TEST_LIVE_XYQ_IDENTITY=1 go test -v ./internal/publicapp -run '^TestLiveXiaoyunqueIdentity$' -count=1`：**失败**，HTTP 200、业务码 1015、subject 缺失，`upstream_identity_rejected`。只读使用现有网页登录状态；未打印或持久化真实凭据。
 
 ## 上游阻碍与剩余门禁
