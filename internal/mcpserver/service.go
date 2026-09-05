@@ -66,6 +66,7 @@ func (s *service) newProtocolServer(logger *slog.Logger) *mcp.Server {
 	)
 	if s.public != nil {
 		s.registerAccountStatus(server)
+		s.registerJobStatus(server)
 	}
 	s.registerCommonTools(server)
 	s.registerGenerationTools(server)

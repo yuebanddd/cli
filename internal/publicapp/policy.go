@@ -168,7 +168,7 @@ func (p *requestPolicy) remember(ctx context.Context, tx *sql.Tx, refs []resourc
 	}
 	return nil
 }
-func (p *requestPolicy) Execute(ctx context.Context, tool string, readOnly bool, raw []byte, call func(context.Context) ([]byte, error)) ([]byte, error) {
+func (p *requestPolicy) Execute(ctx context.Context, tool string, readOnly bool, raw []byte, call func(context.Context) ([]byte, error)) (result []byte, resultErr error) {
 	start := time.Now()
 	var args map[string]any
 	if json.Unmarshal(raw, &args) != nil {
@@ -232,9 +232,15 @@ func (p *requestPolicy) Execute(ctx context.Context, tool string, readOnly bool,
 				return nil, errors.New("idempotency_conflict")
 			}
 			if state == "completed" && len(response) > 0 {
+				if e = p.app.store.Audit(ctx, p.principal.UserID, tool, "replayed", p.requestID); e != nil {
+					return nil, errors.New("audit_unavailable")
+				}
 				return response, nil
 			}
-			return nil, errors.New("operation_pending_or_uncertain: query existing job; do not generate again")
+			if e = p.app.store.Audit(ctx, p.principal.UserID, tool, "retry_blocked", p.requestID); e != nil {
+				return nil, errors.New("audit_unavailable")
+			}
+			return nil, errors.New("operation_pending_or_uncertain: use pippit_get_job with the original idempotency_key; do not generate again")
 		}
 		jobID = id
 	}
@@ -248,15 +254,27 @@ func (p *requestPolicy) Execute(ctx context.Context, tool string, readOnly bool,
 		return nil, e
 	}
 	defer release()
+	// Once execution begins, every failure may follow an upstream side effect,
+	// including invalid output or a failed metadata transaction after success.
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		failedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if jobID != "" {
+			_, _ = p.app.store.DB.ExecContext(failedCtx, `UPDATE jobs SET state='uncertain',updated_at=now() WHERE id=$1 AND state='pending'`, jobID)
+		}
+		_ = p.audit(failedCtx, tool, "failed", time.Since(start), "operation_error", "", "")
+	}()
 	output, callErr := call(ctx)
 	doneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if callErr != nil {
-		if jobID != "" {
-			_, _ = p.app.store.DB.ExecContext(doneCtx, `UPDATE jobs SET state='uncertain',updated_at=now() WHERE id=$1`, jobID)
+		if readOnly {
+			return nil, errors.New("read_error: retry this read without resubmitting generation")
 		}
-		_ = p.audit(doneCtx, tool, "failed", time.Since(start), "upstream_error", "", "")
-		return nil, errors.New("upstream_error: outcome may be uncertain; query status before retrying")
+		return nil, errors.New("upstream_error: outcome may be uncertain; use pippit_get_job with the original idempotency_key before retrying")
 	}
 	if len(output) > 2<<20 {
 		return nil, errors.New("result_metadata_too_large")

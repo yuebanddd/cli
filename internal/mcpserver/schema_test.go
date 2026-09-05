@@ -1,10 +1,50 @@
 package mcpserver
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Pippit-dev/pippit-cli/internal/common"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestLocalToolCatalogStaysCompatible(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	server := newService(&common.Runner{}, DefaultOptions()).newProtocolServer(nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "local-catalog-test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make(map[string]bool, len(ToolNames))
+	for _, name := range ToolNames {
+		want[name] = true
+	}
+	for _, tool := range result.Tools {
+		if !want[tool.Name] {
+			t.Fatal("unexpected local tool", tool.Name)
+		}
+		delete(want, tool.Name)
+	}
+	if len(want) != 0 {
+		t.Fatal("local tools removed", want)
+	}
+}
 
 func TestFileInputMatchesOpenAIFileParameterShape(t *testing.T) {
 	typeInfo := reflect.TypeOf(FileInput{})

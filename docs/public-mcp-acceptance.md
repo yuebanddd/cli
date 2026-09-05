@@ -1,6 +1,6 @@
 # Public MCP 验收记录
 
-日期：2026-09-05。分支：`feature/go-mcp-server`。PR：[yuebanddd/cli#1](https://github.com/yuebanddd/cli/pull/1)，必须保持 Draft。当前结论：**自动化实现验证已取得进展，完整 Public App 尚未通过验收，禁止转 Ready。**
+更新日期：2026-09-06。分支：`feature/go-mcp-server`。PR：[yuebanddd/cli#1](https://github.com/yuebanddd/cli/pull/1)，必须保持 Draft。当前结论：**自动化实现验证已取得进展，完整 Public App 尚未通过验收，禁止转 Ready。**
 
 ## 要求与当前证据
 
@@ -16,6 +16,7 @@
 | oaiusercontent + Fake-IP + SSRF | 默认拒绝 Fake-IP；仅特定域名 + HTTPS 443 + 198.18.0.0/15 的显式例外；TLS 开启、禁代理、非法域/IP/端口拒绝用例通过；真实 ChatGPT 文件与 Clash TUN 组合待验收 |
 | 生成图片/视频不下载、不落地 | 完整 `pippit_query_result` MCP + PostgreSQL + mock 上游查询返回图/视频 URL；媒体监听器收到 0 次请求，缓存为空，响应无 output_path；Public 不注册下载工具；真实生成流程待验收 |
 | 幂等 | 同 key 同参数两次请求只调用上游一次；参数冲突、并发重复、结果不确定不自动重复提交测试通过；保留 tombstone，30 天清理响应及结果 URL metadata |
+| 幂等恢复与终态审计 | `pippit_get_job` 按 OAuth 用户、账号、原幂等键查询，不调用上游；响应丢失恢复、pending 查询、跨租户及账号替换后的拒绝、到期 tombstone 与大 metadata 有界返回通过；无效 JSON、超大输出、归属冲突、数据库拒写和请求取消均立即记录 uncertain 与失败审计；成功回放与被阻止的重试分别审计，均不重复执行 |
 | rate limit / concurrency | PostgreSQL 限流计数与每用户写并发用例通过；所有副本使用共享数据库桶与租约；生产负载容量未做压力验收 |
 | audit / health / ready / migration | 审计写入、清理、schema 回退/重建测试通过；容器 `/readyz` 返回 200，匿名 MCP 返回 401 + metadata challenge；生产日志与监控接入待部署 |
 | Public Canvas | Node 22 实际 runtime 命令目录运行通过，Go bridge 和 PostgreSQL 状态跨用户隔离通过；真实 Canvas mutation 及恢复场景仍待外部验收 |
@@ -39,6 +40,8 @@
 - `PIPPIT_TEST_LIVE_XYQ_IDENTITY=1 go test -v ./internal/publicapp -run '^TestLiveXiaoyunqueIdentity$' -count=1`：**失败**，HTTP 200、业务码 1015、subject 缺失，`upstream_identity_rejected`。只读使用现有网页登录状态；未打印或持久化真实凭据。
 
 ## 上游阻碍与剩余门禁
+
+2026-09-06 补充：新增 job 恢复用例已在真实 PostgreSQL 17 下通过 race 测试；通过内存 MCP transport 实际枚举 local 工具，确认 local 目录不包含 Public 专用查询且原有工具没有删除。上游限制仍沿用下面 2026-09-05 的实测证据，未将模拟恢复测试算作真实网页登录或 ChatGPT 验收。
 
 2026-09-05 获取当前小云雀网页登录页与它引用的官方静态资源：
 

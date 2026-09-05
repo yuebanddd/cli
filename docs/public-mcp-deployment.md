@@ -72,7 +72,11 @@ Public 输入仅接受 `https://oaiusercontent.com` 或其子域的 443 端口 U
 
 ## 幂等、限流与运维
 
-所有写工具必须传 8 至 128 字符 `idempotency_key`。同一用户、同一 key 和同一参数只提交一次；完成后返回已保存响应，参数变化返回冲突。并发重试或网络结果不确定时返回 pending/uncertain，不能换 key 自动重试，避免重复扣积分。请求被取消、响应解析或持久化失败也可能已在上游执行；有 thread/run 时查询现有任务，无 ID 时由运维核对小云雀记录，不能声称 exactly-once。数据库永久保留幂等 tombstone，响应及结果 URL metadata 30 天后清除；重新创建同一 key 仍被拒绝。
+所有写工具必须传 8 至 128 字符 `idempotency_key`。同一用户、同一 key 和同一参数只提交一次；完成后返回已保存响应，参数变化返回冲突。并发重试或网络结果不确定时返回 pending/uncertain，不能换 key 自动重试，避免重复扣积分。请求被取消、响应解析或持久化失败也可能已在上游执行；这些执行后失败会立即尝试写入 uncertain 与失败审计，数据库不可用或进程崩溃则由 janitor 兜底。数据库永久保留幂等 tombstone，响应及结果 URL metadata 30 天后清除；重新创建同一 key 仍被拒绝。
+
+首次响应丢失时，调用仅 Public 模式提供的 `pippit_get_job(idempotency_key=原键)`。它只读取当前用户、当前账号的 PostgreSQL job，不调用小云雀、不提交任务、不下载媒体，继续受 OAuth、限流、并发和审计控制。不存在、其他用户或其他账号的记录均返回 `found=false`；只识别原幂等键，不支持用 job ID 查询。找到后返回 `job_id`、`tool`、`submission_state`、可用的 thread/run ID、`generation_finished`、已保存的 `submission` 与 `result`。`submission_state=completed` 仅表示提交响应已保存，生成是否结束以 `generation_finished` 为准；查询最新上游进度仍使用 `pippit_query_result`。两个已保存响应合计超出 2 MiB 时优先省略 submission，再按需省略 result，并设置 `metadata_omitted=true`，归属内的恢复 ID 始终保留。
+
+如果 job 仍是 pending，等待当前请求完成；如果是 uncertain 且数据库也没有 thread/run，需要运维核对小云雀记录，不能声称 exactly-once，也不能因为 `found=false` 就断言上游从未接受过请求。30 天后的 tombstone 仍可查询恢复 ID 和状态，但不再包含已清理的 URL metadata。
 
 HTTP 每分钟全局 1200、每来源 IP 180；工具每用户每分钟合计 120、每读工具 60、每写工具 6。每用户最多 20 个读调用、1 个写调用；全局读写各自受配置上限控制。限流桶与工作租约在 PostgreSQL 中跨副本共享。工具请求 15 分钟超时，租约 16 分钟过期，崩溃 pending job 在 20 分钟后标为 uncertain。生成任务达到 active 上限时必须查询已有任务至终态才能释放名额。
 

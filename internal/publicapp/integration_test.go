@@ -272,6 +272,10 @@ func TestPostgresTwoTenantMCPAndIdempotency(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("charged %d times", calls.Load())
 	}
+	var replays int
+	if e := a.store.DB.QueryRow(`SELECT count(*) FROM audit_events WHERE user_id=$1 AND event='pippit_generate_video' AND outcome='replayed'`, userA).Scan(&replays); e != nil || replays != 1 {
+		t.Fatal("successful retry was not audited", replays, e)
+	}
 	for _, query := range []map[string]any{{"name": "pippit_get_thread", "arguments": map[string]any{"thread_id": "ta"}}, {"name": "pippit_nest_submit", "arguments": map[string]any{"thread_id": "ta", "message": "modify", "idempotency_key": "bob-modify-001"}}, {"name": "pippit_query_result", "arguments": map[string]any{"thread_id": "ta", "run_id": "ra"}}} {
 		w := mcpRequest(a, tokensB.AccessToken, "tools/call", query)
 		if !strings.Contains(w.Body.String(), "resource_not_found") {

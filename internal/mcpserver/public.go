@@ -16,6 +16,33 @@ import (
 // Implementations MUST bind to a server-verified OAuth principal, not tool args.
 type PublicPolicy interface {
 	Execute(context.Context, string, bool, []byte, func(context.Context) ([]byte, error)) ([]byte, error)
+	GetJob(context.Context, string) (PublicJob, error)
+}
+
+// PublicJob contains only the current tenant's durable operation metadata.
+// SubmissionState describes request persistence, not generation completion.
+type PublicJob struct {
+	Found              bool   `json:"found"`
+	JobID              string `json:"job_id,omitempty"`
+	Tool               string `json:"tool,omitempty"`
+	SubmissionState    string `json:"submission_state,omitempty"`
+	ThreadID           string `json:"thread_id,omitempty"`
+	RunID              string `json:"run_id,omitempty"`
+	GenerationFinished bool   `json:"generation_finished"`
+	MetadataOmitted    bool   `json:"metadata_omitted,omitempty"`
+	Submission         any    `json:"submission,omitempty"`
+	Result             any    `json:"result,omitempty"`
+}
+
+type getJobInput struct {
+	IdempotencyKey string `json:"idempotency_key" jsonschema:"original operation key used to submit this job"`
+}
+
+func (s *service) registerJobStatus(server *mcp.Server) {
+	addTool(s, server, toolDefinition("pippit_get_job", "Get submitted job", "Read your stored job by its original idempotency_key after a lost response or uncertain submission. This never submits work or downloads media. submission_state describes the saved request, not whether generation finished. Use returned thread_id and run_id with pippit_query_result to check upstream progress; never use a new key to retry an uncertain operation.", true, false, true, false, nil, "正在查询任务记录…", "已查询任务记录"), func(ctx context.Context, _ *mcp.CallToolRequest, in getJobInput) (*mcp.CallToolResult, PublicJob, error) {
+		job, err := s.public.GetJob(ctx, in.IdempotencyKey)
+		return nil, job, err
+	})
 }
 
 // NewPublicHandler shares the local tool implementations with a request-scoped
