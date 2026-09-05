@@ -391,3 +391,207 @@ func TestPostgresExpiryRateLimitsDisconnectAndMigrations(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestPostgresBrowserCancelAndLogout(t *testing.T) {
+	a := testApp(t)
+	user, tokens := testUser(t, a, "alice")
+	browser, session := randomToken(), randomToken()
+	cookies := []*http.Cookie{{Name: browserCookie, Value: browser}, {Name: sessionCookie, Value: session}}
+	if _, e := a.store.DB.Exec(`INSERT INTO browser_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')`, digest(session), user); e != nil {
+		t.Fatal(e)
+	}
+	newFlow := func(user string) (string, url.Values) {
+		t.Helper()
+		id := randomToken()
+		data, _ := json.Marshal(authorization{ClientID: "chatgpt", RedirectURI: "https://chatgpt.com/connector_platform_oauth_redirect", Challenge: challenge(randomToken()), State: "cancel-state", Resource: a.resource(), Scope: scope})
+		if _, e := a.store.DB.Exec(`INSERT INTO oauth_flows(id,browser_hash,user_id,data,expires_at) VALUES($1,$2,NULLIF($3,'')::uuid,$4,now()+interval '10 minutes')`, id, digest(browser), user, data); e != nil {
+			t.Fatal(e)
+		}
+		return id, url.Values{"flow": {id}, "csrf": {digest("csrf:" + browser + ":" + id)}}
+	}
+	_, cancelForm := newFlow("")
+	cancelForm.Set("decision", "deny")
+	w := request(a, "POST", "/oauth/consent", cancelForm.Encode(), "", cookies, a.cfg.Issuer)
+	redirect, _ := url.Parse(w.Header().Get("Location"))
+	if w.Code != 303 || redirect.Query().Get("error") != "access_denied" || redirect.Query().Get("state") != "cancel-state" || redirect.Query().Get("iss") != a.cfg.Issuer {
+		t.Fatalf("anonymous cancellation failed: %d %s", w.Code, w.Body)
+	}
+	if replay := request(a, "POST", "/oauth/consent", cancelForm.Encode(), "", cookies, a.cfg.Issuer); replay.Code != 403 {
+		t.Fatal("cancelled flow reused")
+	}
+	_, logoutForm := newFlow(user)
+	otherID, otherForm := newFlow(user)
+	w = request(a, "POST", "/account/logout", logoutForm.Encode(), "", cookies, a.cfg.Issuer)
+	if w.Code != 200 {
+		t.Fatalf("logout: %d %s", w.Code, w.Body)
+	}
+	otherForm.Set("decision", "allow")
+	if w = request(a, "POST", "/oauth/consent", otherForm.Encode(), "", cookies, a.cfg.Issuer); w.Code != 403 {
+		t.Fatal("old tab authorized after logout")
+	}
+	if w = request(a, "GET", "/oauth/authorize?flow="+otherID, "", "", cookies, ""); w.Code != 400 {
+		t.Fatal("old tab restored after logout")
+	}
+	r := httptest.NewRequest("GET", "https://app.test", nil)
+	for _, c := range cookies {
+		r.AddCookie(c)
+	}
+	if a.session(r) != "" {
+		t.Fatal("session survived logout")
+	}
+	if _, e := a.authenticate(context.Background(), "Bearer "+tokens.AccessToken); e != nil {
+		t.Fatal("browser logout unexpectedly disconnected OAuth", e)
+	}
+}
+
+func TestPostgresInFlightRevocationAndMetadataRetention(t *testing.T) {
+	a := testApp(t)
+	_, tokens := testUser(t, a, "alice")
+	p := policyFor(t, a, tokens.AccessToken)
+	runner := p.runner()
+	ctx := context.Background()
+	if _, e := runner.Auth.ResolveAccessKey(ctx); e != nil {
+		t.Fatal(e)
+	}
+	_, e := p.Execute(ctx, "pippit_generate_video", false, []byte(`{"idempotency_key":"retention-1"}`), func(context.Context) ([]byte, error) {
+		return []byte(`{"thread_id":"retention-t","run_id":"retention-r"}`), nil
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.store.DB.Exec(`UPDATE jobs SET updated_at=now()-interval '31 days',result_metadata='{"url":"https://example.test/expired"}'`); e != nil {
+		t.Fatal(e)
+	}
+	if e = a.store.Cleanup(ctx); e != nil {
+		t.Fatal(e)
+	}
+	var retained bool
+	if e = a.store.DB.QueryRow(`SELECT response IS NULL AND result_metadata IS NULL FROM jobs`).Scan(&retained); e != nil || !retained {
+		t.Fatal("URL metadata retention failed", e)
+	}
+	if _, e = a.store.DB.Exec(`UPDATE oauth_families SET revoked_at=now() WHERE id=$1`, p.principal.FamilyID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = runner.Auth.ResolveAccessKey(ctx); e == nil {
+		t.Fatal("in-flight runner used credential after family revocation")
+	}
+}
+
+func TestPostgresMCPResultMediaNeverDownloaded(t *testing.T) {
+	a := testApp(t)
+	_, tokens := testUser(t, a, "alice")
+	p := policyFor(t, a, tokens.AccessToken)
+	_, e := p.Execute(context.Background(), "pippit_generate_video", false, []byte(`{"idempotency_key":"remote-result-1"}`), func(context.Context) ([]byte, error) {
+		return []byte(`{"thread_id":"result-thread","run_id":"result-run"}`), nil
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var mediaRequests atomic.Int32
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mediaRequests.Add(1)
+		t.Error("generated media was fetched", r.URL.Path)
+		w.WriteHeader(500)
+	}))
+	defer media.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer key-for-alice" {
+			t.Error("wrong tenant credential")
+		}
+		content := []any{
+			map[string]any{"sub_type": "biz/x_data_video", "data": map[string]any{"video": map[string]any{"download_url": media.URL + "/video.mp4", "asset_id": "result-video", "vid": "video-id", "title": "Generated video"}}},
+			map[string]any{"sub_type": "biz/x_data_image", "data": map[string]any{"image": map[string]any{"url": media.URL + "/image.png", "asset_id": "result-image", "metadata": map[string]any{"format": "png"}}}},
+		}
+		writeJSON(w, 200, map[string]any{"ret": "0", "data": map[string]any{"thread": map[string]any{"thread_id": "result-thread", "run_list": []any{map[string]any{"run_id": "result-run", "state": 3, "entry_list": []any{map[string]any{"artifact": map[string]any{"content": content}}}}}}}})
+	}))
+	defer upstream.Close()
+	a.clientFactory = func(auth common.RequestAuthorizer) common.Client {
+		return common.NewHTTPClient(upstream.URL, time.Second, auth)
+	}
+	w := mcpRequest(a, tokens.AccessToken, "tools/call", map[string]any{"name": "pippit_query_result", "arguments": map[string]any{"thread_id": "result-thread", "run_id": "result-run"}})
+	if w.Code != 200 || strings.Contains(w.Body.String(), `"isError":true`) || !strings.Contains(w.Body.String(), media.URL+"/video.mp4") || !strings.Contains(w.Body.String(), media.URL+"/image.png") || strings.Contains(w.Body.String(), "output_path") {
+		t.Fatalf("remote metadata missing: %d %s", w.Code, w.Body)
+	}
+	if mediaRequests.Load() != 0 {
+		t.Fatal("generated media passed through server")
+	}
+	entries, e := os.ReadDir(a.cache.Dir)
+	if e != nil || len(entries) != 0 {
+		t.Fatal("result query wrote to cache", e)
+	}
+	var finished bool
+	var metadata []byte
+	if e = a.store.DB.QueryRow(`SELECT generation_finished,result_metadata FROM jobs`).Scan(&finished, &metadata); e != nil || !finished || !bytes.Contains(metadata, []byte(media.URL+"/video.mp4")) {
+		t.Fatal("result metadata not persisted", e)
+	}
+}
+
+func TestPostgresPublicCanvasRuntimeAndStateIsolation(t *testing.T) {
+	a := testApp(t)
+	script, e := filepath.Abs("../../scripts/public-canvas-command.js")
+	if e != nil {
+		t.Fatal(e)
+	}
+	a.cfg.CanvasScript = script
+	_, tokensA := testUser(t, a, "alice")
+	_, tokensB := testUser(t, a, "bob")
+	p := policyFor(t, a, tokensA.AccessToken)
+	ctx := context.Background()
+	output, e := p.RunCanvasCommand(ctx, []string{"list"})
+	if e != nil || !bytes.Contains(output, []byte("commands")) {
+		t.Fatal("public runtime catalog unavailable; run npm run prepare:canvas-runtime", e)
+	}
+	tx, e := a.store.DB.BeginTx(ctx, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer tx.Rollback()
+	if e = p.remember(ctx, tx, []resourceRef{{"asset", "canvas-a", ""}}); e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = p.canvasOperation(ctx, "canvas-a", "state.write", []byte(`{"state":{"clientId":"alice-private","outbound":[]}}`)); e != nil {
+		t.Fatal(e)
+	}
+	state, e := p.canvasOperation(ctx, "canvas-a", "state.read", []byte(`{}`))
+	encoded, _ := json.Marshal(state)
+	if e != nil || !bytes.Contains(encoded, []byte("alice-private")) {
+		t.Fatal("Canvas state missing", e)
+	}
+	b := policyFor(t, a, tokensB.AccessToken)
+	if _, e = b.RunCanvasCommand(ctx, []string{"run", "list_checkpoints", "--canvas-id", "canvas-a", "--input", "{}"}); e == nil {
+		t.Fatal("foreign Canvas accepted by Node bridge")
+	}
+	state, e = b.canvasOperation(ctx, "canvas-a", "state.read", []byte(`{}`))
+	encoded, _ = json.Marshal(state)
+	if e == nil && bytes.Contains(encoded, []byte("alice-private")) {
+		t.Fatal("foreign Canvas state exposed")
+	}
+}
+
+func TestPostgresReadCannotClaimForeignThread(t *testing.T) {
+	a := testApp(t)
+	_, tokens := testUser(t, a, "alice")
+	p := policyFor(t, a, tokens.AccessToken)
+	ctx := context.Background()
+	_, e := p.Execute(ctx, "pippit_generate_video", false, []byte(`{"idempotency_key":"owned-thread-1"}`), func(context.Context) ([]byte, error) {
+		return []byte(`{"thread_id":"owned","run_id":"original"}`), nil
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = p.Execute(ctx, "pippit_get_thread", true, []byte(`{"thread_id":"owned"}`), func(context.Context) ([]byte, error) {
+		return []byte(`{"thread_id":"owned","data":{"thread":{"thread_id":"foreign","run_list":[{"run_id":"foreign-run"}]}}}`), nil
+	})
+	if e == nil || p.owns(ctx, resourceRef{"thread", "foreign", ""}) == nil {
+		t.Fatal("read response acquired a foreign thread")
+	}
+	_, e = p.Execute(ctx, "pippit_get_thread", true, []byte(`{"thread_id":"owned"}`), func(context.Context) ([]byte, error) {
+		return []byte(`{"thread_id":"owned","data":{"thread":{"thread_id":"owned","run_list":[{"run_id":"discovered"}]}}}`), nil
+	})
+	if e != nil || p.owns(ctx, resourceRef{"run", "discovered", "owned"}) != nil {
+		t.Fatal("nested run not associated with its owned thread", e)
+	}
+}

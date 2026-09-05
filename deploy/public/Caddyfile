@@ -1,0 +1,8 @@
+{$PUBLIC_HOST} {
+    # No access log: OAuth query strings and signed file URLs are secrets.
+    reverse_proxy app:8787 {
+        transport http {
+            response_header_timeout 16m
+        }
+    }
+}

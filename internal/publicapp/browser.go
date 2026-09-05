@@ -248,7 +248,7 @@ func (a *App) bindCallback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "message": "授权完成，请返回原页面继续。"})
 }
 func (a *App) consent(w http.ResponseWriter, r *http.Request) {
-	f, ok := a.formFlow(w, r, true)
+	f, ok := a.formFlow(w, r, false)
 	if !ok {
 		return
 	}
@@ -273,7 +273,7 @@ func (a *App) consent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	result, e := tx.ExecContext(r.Context(), `UPDATE oauth_flows SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL AND expires_at>now() AND user_id=$2`, f.ID, f.UserID)
+	result, e := tx.ExecContext(r.Context(), `UPDATE oauth_flows SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL AND expires_at>now() AND user_id IS NOT DISTINCT FROM NULLIF($2,'')::uuid`, f.ID, f.UserID)
 	if e != nil {
 		http.Error(w, "unavailable", 503)
 		return
@@ -300,7 +300,7 @@ func (a *App) consent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", 503)
 		return
 	}
-	if _, e = tx.ExecContext(r.Context(), `INSERT INTO audit_events(user_id,event,outcome,correlation_id) VALUES($1,'oauth.consent',$2,$3)`, f.UserID, decision, f.ID); e != nil {
+	if _, e = tx.ExecContext(r.Context(), `INSERT INTO audit_events(user_id,event,outcome,correlation_id) VALUES(NULLIF($1,'')::uuid,'oauth.consent',$2,$3)`, f.UserID, decision, f.ID); e != nil {
 		http.Error(w, "unavailable", 503)
 		return
 	}
@@ -316,11 +316,28 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, e := a.store.DB.ExecContext(r.Context(), `DELETE FROM browser_sessions WHERE token_hash=$1 AND user_id=$2`, digest(cookieValue(r, sessionCookie)), f.UserID); e != nil {
+	tx, e := a.store.DB.BeginTx(r.Context(), nil)
+	if e != nil {
+		http.Error(w, "unavailable", 503)
+		return
+	}
+	defer tx.Rollback()
+	if _, e = tx.ExecContext(r.Context(), `DELETE FROM browser_sessions WHERE token_hash=$1 AND user_id=$2`, digest(cookieValue(r, sessionCookie)), f.UserID); e != nil {
+		http.Error(w, "unavailable", 503)
+		return
+	}
+	// A flow itself grants browser authority, including before a session exists.
+	// Invalidate every tab in this browser so Back cannot authorize after logout.
+	if _, e = tx.ExecContext(r.Context(), `UPDATE oauth_flows SET consumed_at=now() WHERE browser_hash=$1 AND consumed_at IS NULL`, f.BrowserHash); e != nil {
+		http.Error(w, "unavailable", 503)
+		return
+	}
+	if _, e = tx.ExecContext(r.Context(), `INSERT INTO audit_events(user_id,event,outcome,correlation_id) VALUES($1,'account.logout','success',$2)`, f.UserID, f.ID); e != nil || tx.Commit() != nil {
 		http.Error(w, "unavailable", 503)
 		return
 	}
 	setCookie(w, sessionCookie, "", -1)
+	setCookie(w, browserCookie, "", -1)
 	writeJSON(w, 200, map[string]bool{"logged_out": true})
 }
 func (a *App) unlink(w http.ResponseWriter, r *http.Request) {

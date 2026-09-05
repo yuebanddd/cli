@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -221,7 +222,8 @@ func oauthError(w http.ResponseWriter, code string) {
 	writeJSON(w, 400, map[string]string{"error": code})
 }
 func parseForm(w http.ResponseWriter, r *http.Request) bool {
-	if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/x-www-form-urlencoded" {
 		http.Error(w, "form content type required", 415)
 		return false
 	}

@@ -171,7 +171,7 @@ func (s *Store) Cleanup(ctx context.Context) error {
 		`DELETE FROM rate_buckets WHERE window_start<now()-interval '1 day'`,
 		`UPDATE jobs SET state='uncertain',updated_at=now() WHERE state='pending' AND updated_at<now()-interval '20 minutes'`,
 		// Retain the idempotency tombstone; drop URL-bearing responses after 30 days.
-		`UPDATE jobs SET response=NULL WHERE response IS NOT NULL AND updated_at<now()-interval '30 days'`,
+		`UPDATE jobs SET response=NULL,result_metadata=NULL WHERE (response IS NOT NULL OR result_metadata IS NOT NULL) AND updated_at<now()-interval '30 days'`,
 		`DELETE FROM audit_events WHERE created_at<now()-interval '90 days'`,
 	} {
 		if _, e = tx.ExecContext(ctx, q); e != nil {

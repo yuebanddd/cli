@@ -26,9 +26,14 @@ type requestPolicy struct {
 type userAuth struct {
 	store         *Store
 	user, account string
+	family        string
 }
 
 func (u *userAuth) ResolveAccessKey(ctx context.Context) (string, error) {
+	var one int
+	if e := u.store.DB.QueryRowContext(ctx, `SELECT 1 FROM oauth_families WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now()`, u.family, u.user).Scan(&one); e != nil {
+		return "", errors.New("reauthorization_required")
+	}
 	c, account, e := u.store.resolveCredential(ctx, u.user)
 	if e != nil {
 		return "", e
@@ -59,7 +64,7 @@ func (u *userAuth) Login(context.Context, auth.LoginOptions) (*auth.Credential, 
 }
 func (u *userAuth) Logout(context.Context, bool) error { return errors.New("use account disconnect") }
 func (p *requestPolicy) runner() *common.Runner {
-	a := &userAuth{p.app.store, p.principal.UserID, p.accountID}
+	a := &userAuth{p.app.store, p.principal.UserID, p.accountID, p.principal.FamilyID}
 	return &common.Runner{Config: &config.Config{BaseURL: config.DefaultBaseURL, HTTPTimeout: 2 * time.Minute}, Auth: a, Client: p.app.clientFactory(a)}
 }
 
@@ -67,11 +72,13 @@ type resourceRef struct{ kind, id, parent string }
 
 func resourceRefs(v any) []resourceRef {
 	var refs []resourceRef
-	var walk func(any)
-	walk = func(v any) {
+	var walk func(any, string)
+	walk = func(v any, thread string) {
 		switch x := v.(type) {
 		case map[string]any:
-			thread, _ := x["thread_id"].(string)
+			if ownThread, ok := x["thread_id"].(string); ok {
+				thread = ownThread
+			}
 			for key, value := range x {
 				normalized := strings.ToLower(strings.ReplaceAll(key, "_", ""))
 				kind := ""
@@ -106,15 +113,15 @@ func resourceRefs(v any) []resourceRef {
 						}
 					}
 				}
-				walk(value)
+				walk(value, thread)
 			}
 		case []any:
 			for _, v := range x {
-				walk(v)
+				walk(v, thread)
 			}
 		}
 	}
-	walk(v)
+	walk(v, "")
 	return refs
 }
 func (p *requestPolicy) owns(ctx context.Context, ref resourceRef) error {
@@ -270,14 +277,28 @@ func (p *requestPolicy) Execute(ctx context.Context, tool string, readOnly bool,
 		data["status"] = "submitted"
 		output, _ = json.Marshal(data)
 	}
+	// Only successful CREATE/UPLOAD results may introduce new ownership. Reads
+	// may reveal assets of an already-owned thread but never claim foreign IDs.
+	refs := resourceRefs(data)
+	if readOnly {
+		for _, ref := range refs {
+			// Reads can discover runs on an owned thread, but cannot acquire a
+			// new thread or project from an unexpected upstream response.
+			if ref.kind == "run" {
+				ref = resourceRef{"thread", ref.parent, ""}
+			}
+			if ref.kind == "thread" || ref.kind == "project" {
+				if e = p.owns(doneCtx, ref); e != nil {
+					return nil, errors.New("result_ownership_conflict")
+				}
+			}
+		}
+	}
 	tx, e := p.app.store.DB.BeginTx(doneCtx, nil)
 	if e != nil {
 		return nil, errors.New("result_persistence_failed: do not repeat generation")
 	}
 	defer tx.Rollback()
-	// Only successful CREATE/UPLOAD results may introduce new ownership. Reads
-	// may reveal assets of an already-owned thread but never claim foreign IDs.
-	refs := resourceRefs(data)
 	if e = p.remember(doneCtx, tx, refs); e != nil {
 		return nil, errors.New("result_ownership_conflict")
 	}

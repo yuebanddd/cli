@@ -52,13 +52,21 @@ func TestFormsRejectDuplicateTokens(t *testing.T) {
 		t.Fatal("duplicate accepted")
 	}
 }
+
+func TestFormsAcceptCharset(t *testing.T) {
+	r := httptest.NewRequest("POST", "https://app.test/oauth/token", strings.NewReader("code=one"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	if !parseForm(httptest.NewRecorder(), r) || r.PostForm.Get("code") != "one" {
+		t.Fatal("valid form with charset rejected")
+	}
+}
 func TestNestedOwnershipReferences(t *testing.T) {
-	refs := resourceRefs(map[string]any{"thread_id": "ta", "run_id": "rb", "request": map[string]any{"root_pippit_asset_id": "root", "transactions": []any{map[string]any{"patches": []any{map[string]any{"asset_id": "foreign"}}}}}})
+	refs := resourceRefs(map[string]any{"thread_id": "ta", "run_id": "rb", "run_list": []any{map[string]any{"run_id": "nested-run"}}, "request": map[string]any{"root_pippit_asset_id": "root", "transactions": []any{map[string]any{"patches": []any{map[string]any{"asset_id": "foreign"}}}}}})
 	found := map[string]resourceRef{}
 	for _, r := range refs {
 		found[r.id] = r
 	}
-	if found["rb"].parent != "ta" || found["foreign"].kind != "asset" || found["root"].kind != "asset" {
+	if found["rb"].parent != "ta" || found["nested-run"].parent != "ta" || found["foreign"].kind != "asset" || found["root"].kind != "asset" {
 		t.Fatal(refs)
 	}
 }

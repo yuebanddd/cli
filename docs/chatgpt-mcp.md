@@ -4,6 +4,8 @@
 
 > 当前状态：实验性。服务端与 ChatGPT 文件参数协议已经实现；合并前仍需在真实 ChatGPT 会话中完成一次“聊天生图 → 小云雀图生视频”的端到端验证。
 
+多用户 Public App 使用 `mcp serve --mode public`，部署、OAuth、PostgreSQL、临时缓存和验收门禁见 [Public MCP 部署文档](public-mcp-deployment.md)。下文 `mcp serve`、CLI 登录、静态 Bearer 与本地下载工具说明适用于 local 模式。
+
 ## 设计目标
 
 ChatGPT 已经可以在聊天中直接生成和修改图片。本服务不重复调用 OpenAI 生图 API，而是负责后半段：
@@ -19,7 +21,7 @@ MCP Server 下载 ChatGPT 临时文件
               ↓
 上传至小云雀并提交生成任务
               ↓
-查询并下载视频结果
+查询小云雀视频 URL 与 metadata（服务端不下载生成产物）
 ```
 
 工具文件字段使用 ChatGPT 官方文件参数结构：
@@ -124,7 +126,7 @@ tunnel-client run --profile pippit-local
 6. 打开 ChatGPT Plugins，新增开发者 App；Connection 选择 **Tunnel**，然后选择对应 tunnel 或填写 `tunnel_id`。
 7. 检查 ChatGPT 扫描到的工具名称、Schema、Annotations 与文件参数。
 
-Secure MCP Tunnel 仅适合私有连接和开发测试，不等同于公开插件发布。公开插件需要稳定的公网 HTTPS Streamable HTTP 端点，并按 OpenAI 要求实现 OAuth 2.1、mTLS 或适用的生产认证边界。
+Secure MCP Tunnel 仅适合私有连接和开发测试，不等同于公开插件发布。公开插件需要稳定的公网 HTTPS Streamable HTTP 端点与 OAuth 2.1 用户认证；mTLS 可额外验证客户端身份，不能替代用户 OAuth。
 
 ## ChatGPT 生图 → 小云雀视频测试
 
