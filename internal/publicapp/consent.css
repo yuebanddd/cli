@@ -1,0 +1,30 @@
+:root { font-family: system-ui, sans-serif; color: #24282b; background: #f6f8f9; font-size: 16px; letter-spacing: 0; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 640px; margin: 0 auto; padding: 32px 24px; }
+header { border-bottom: 2px solid #178273; padding-bottom: 20px; }
+.brand { color: #147467; font-weight: 700; margin: 0 0 12px; }
+h1 { font-size: 26px; line-height: 1.4; margin: 0 0 16px; }
+h2 { font-size: 19px; margin: 0 0 16px; }
+p { line-height: 1.65; overflow-wrap: anywhere; }
+.client { color: #555e65; margin: 0; }
+section { padding: 24px 0; border-bottom: 1px solid #d7dfe1; }
+label { display: block; margin: 16px 0 8px; line-height: 1.5; }
+input[type=password], select { font: inherit; width: 100%; min-width: 0; height: 44px; padding: 8px 12px; border: 1px solid #89979b; border-radius: 4px; background: white; }
+button { font: inherit; font-weight: 600; border: 1px solid transparent; border-radius: 4px; padding: 11px 16px; background: #147467; color: white; cursor: pointer; min-height: 44px; max-width: 100%; line-height: 1.4; overflow-wrap: anywhere; }
+button:hover { filter: brightness(.94); }
+button:disabled { background: #dfe5e6; color: #697378; cursor: default; }
+.secondary { background: white; border-color: #a9b4b7; color: #30383b; }
+.danger { background: white; border-color: #ba5961; color: #9e2736; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.check { display: flex; align-items: flex-start; gap: 10px; margin: 20px 0; }
+.check input { flex: 0 0 18px; width: 18px; height: 18px; margin: 3px 0 0; accent-color: #147467; }
+.check span { min-width: 0; }
+summary { cursor: pointer; font-weight: 600; line-height: 1.5; }
+details[open] > summary { margin-bottom: 16px; }
+.notice { color: #76521a; border-left: 3px solid #b88b36; padding-left: 12px; }
+footer { padding-top: 24px; }
+footer details { margin-top: 24px; }
+footer details form + form { margin-top: 24px; }
+:focus-visible { outline: 3px solid #448ad0; outline-offset: 3px; }
+@media (max-width: 420px) { main { padding: 24px 16px; } h1 { font-size: 23px; } .actions { flex-direction: column; } }

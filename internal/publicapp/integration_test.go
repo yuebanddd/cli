@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,14 +22,6 @@ import (
 	"github.com/Pippit-dev/pippit-cli/internal/common"
 )
 
-type verifiedUpstream struct{}
-
-func (verifiedUpstream) Verify(_ context.Context, p auth.RemoteAccessKeyPayload) (string, error) {
-	if p.AccessKey != "key-for-"+p.UID {
-		return "", errors.New("forged UID")
-	}
-	return p.UID, nil
-}
 func testApp(t *testing.T) *App {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -70,7 +61,9 @@ func testApp(t *testing.T) *App {
 		t.Fatal("migration not idempotent", e)
 	}
 	c := Config{Issuer: "https://app.test", Listen: "127.0.0.1:8787", DatabaseURL: u.String(), Key: key, Clients: map[string][]string{"chatgpt": {"https://chatgpt.com/connector_platform_oauth_redirect"}}, AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, CacheDir: filepath.Join(t.TempDir(), "media"), CacheTTL: 6 * time.Hour, CacheBytes: 1 << 30, MinFreeBytes: 0, MaxFileBytes: 1 << 20, MaxFiles: 12, GlobalConcurrent: 16, UserActiveJobs: 3, NodeBinary: "node"}
-	a, e := New(ctx, c, s, verifiedUpstream{}, nil)
+	provider, loginCtx := testLoginProvider(t)
+	c.LoginIssuer, c.LoginClientID, c.LoginClientSecret = provider.URL, "service-client", "fixture-secret"
+	a, e := New(loginCtx, c, s, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -160,43 +153,17 @@ func TestPostgresOAuthBrowserPKCEAndReplay(t *testing.T) {
 		t.Fatalf("authorize: %d %s", w.Code, w.Body)
 	}
 	cookies := w.Result().Cookies()
-	extract := func(name string) string {
-		m := regexp.MustCompile(`name="` + name + `" value="([^"]+)"`).FindStringSubmatch(w.Body.String())
-		if len(m) != 2 {
-			t.Fatalf("missing %s", name)
-		}
-		return m[1]
+	form := pageForm(t, w)
+	path, callback := loginResponse(t, a, form, cookies, "alice", "")
+	if callback.Code != 303 {
+		t.Fatalf("callback: %d %s", callback.Code, callback.Body)
 	}
-	flowID, csrfValue := extract("flow"), extract("csrf")
-	form := url.Values{"flow": {flowID}, "csrf": {csrfValue}}
-	start := request(a, "POST", "/bind/start", form.Encode(), "", cookies, a.cfg.Issuer)
-	if start.Code != 303 {
-		t.Fatalf("bind start: %d %s", start.Code, start.Body)
-	}
-	login, _ := url.Parse(start.Header().Get("Location"))
-	callback, _ := url.Parse(login.Query().Get("callback"))
-	payload := auth.RemoteAccessKeyPayload{Type: "access_key", UID: "alice", TokenID: "token_alice", AccessKey: "key-for-alice", ExpiredAt: time.Now().Add(time.Hour).Unix(), RandomSecretKey: login.Query().Get("random_secret_key"), Source: auth.RemoteLoginSource, CallbackURL: callback.String()}
-	callCallback := func(p auth.RemoteAccessKeyPayload) *httptest.ResponseRecorder {
-		b, _ := json.Marshal(p)
-		r := httptest.NewRequest("POST", callback.String(), bytes.NewReader(b))
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("Origin", "https://xyq.jianying.com")
-		r.RemoteAddr = "203.0.113.20:1234"
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, r)
-		return w
-	}
-	forged := payload
-	forged.UID = "victim"
-	if w := callCallback(forged); w.Code != 403 {
-		t.Fatalf("forged UID accepted: %d %s", w.Code, w.Body)
-	}
-	if w := callCallback(payload); w.Code != 200 {
-		t.Fatalf("callback: %d %s", w.Code, w.Body)
-	}
-	if w := callCallback(payload); w.Code != 400 {
+	if request(a, "GET", path, "", "", cookies, "").Code != 403 {
 		t.Fatal("callback replay accepted")
 	}
+	cookies = mergeCookies(cookies, callback.Result().Cookies())
+	w = request(a, "GET", callback.Header().Get("Location"), "", "", cookies, "")
+	form = bindTestKey(t, a, cookies, pageForm(t, w), "key-for-alice")
 	form.Set("decision", "allow")
 	consent := request(a, "POST", "/oauth/consent", form.Encode(), "", cookies, a.cfg.Issuer)
 	if consent.Code != 303 {

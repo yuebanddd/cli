@@ -4,7 +4,7 @@
 
 > 当前状态：实验性。服务端与 ChatGPT 文件参数协议已经实现；合并前仍需在真实 ChatGPT 会话中完成一次“聊天生图 → 小云雀图生视频”的端到端验证。
 
-多用户 Public App 使用 `mcp serve --mode public`，部署、OAuth、PostgreSQL、临时缓存和验收门禁见 [Public MCP 部署文档](public-mcp-deployment.md)。下文 `mcp serve`、CLI 登录、静态 Bearer 与本地下载工具说明适用于 local 模式。
+多用户 Public App 使用 `mcp serve --mode public`，采用独立 OIDC 服务账号和手动 Access Key 绑定，面向已有可用密钥的用户。部署、OAuth、PostgreSQL、临时缓存和验收门禁见 [Public MCP 部署文档](public-mcp-deployment.md)。下文 `mcp serve`、CLI 登录、静态 Bearer 与本地下载工具说明适用于 local 模式。
 
 ## 设计目标
 

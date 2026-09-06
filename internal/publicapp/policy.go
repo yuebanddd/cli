@@ -376,7 +376,7 @@ func (p *requestPolicy) acquire(ctx context.Context, tool string, readOnly bool)
 	// Count submitted runs still active upstream, not only HTTP submissions.
 	if !readOnly && isGeneration(tool) {
 		var active int
-		e = tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE user_id=$1 AND run_id IS NOT NULL AND generation_finished=false`, p.principal.UserID).Scan(&active)
+		e = tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE user_id=$1 AND account_id=$2 AND run_id IS NOT NULL AND generation_finished=false`, p.principal.UserID, p.accountID).Scan(&active)
 		if e != nil {
 			return nil, e
 		}

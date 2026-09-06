@@ -6,9 +6,13 @@ Public 模式入口为 `pippit-tool-cli mcp serve --mode public`。默认 `mcp s
 
 ChatGPT 使用预注册的公开 OAuth 客户端，执行 authorization code + PKCE S256；scope 为 `xiaoyunque:tools`，resource 为 `https://你的域名/mcp`。授权服务器与受保护资源 metadata 均公开，匿名 MCP 返回 401 和 `WWW-Authenticate` discovery URL。metadata 声明 `none` 客户端认证，不需要 client secret，不支持 password/client-credentials grant。按 [OpenAI 官方认证文档](https://developers.openai.com/plugins/build/auth) 在 App 管理页选择预定义客户端，并将页面显示的**完整回调 URL**加入 allowlist；不要自行假定回调路径。授权成功和用户取消均返回原 state 和 issuer。
 
-设计流程是用户在本服务授权页跳转小云雀官网登录，完成后回到原页批准 ChatGPT。网页登录回调绑定一次性随机 secret、device、callback 和浏览器 flow，并独立向小云雀 `/api/biz/v1/user/info` 验证 Access Key 所属 UID。未通过验证时拒绝绑定，不能信任浏览器提交的 UID。**2026-09-05 实测该身份端点返回业务码 1015，且当前小云雀网页登录代码仅接受 loopback HTTP callback；Public HTTPS 绑定尚不能工作。** 必须由上游提供支持 Public callback 和可信身份校验的接口后再次验收，不能通过放松 UID 校验发布。证据见验收记录。
+当前产品面向已有小云雀 Access Key 的用户：先通过独立 OIDC 提供方登录本服务，在本服务 HTTPS 页面手动填写自己的 Access Key，再批准 ChatGPT。服务账号只由已验证 ID token 的 `issuer + subject` 确定；不按邮箱、Access Key、用户提交的 UID 或旧 upstream identity 合并账号。注册、密码找回、多因素认证和登录提供方的会话管理由 OIDC 提供方负责。本服务退出只销毁本服务 session，不退出提供方。
 
-PostgreSQL 保存用户、已验证上游身份、账号、OAuth flow/code/token family、凭据密文、资源归属、job metadata、Canvas 状态、限流桶与审计。Access/refresh token、浏览器 session 与 binding secret 只保存 SHA-256 摘要。凭据使用每账号随机 AES-256-GCM data key 加密，data key 再用 master key 包装，账号 ID 作为 AAD，防止密文跨账号搬移。数据库备份与 master key 必须分别保管。
+密钥输入只检查 Bearer 格式，并用密码输入框、同源 POST、CSRF、已登录 session 与一次性 flow 保护。**保存并不代表密钥可用或已验证小云雀身份**；页面明确显示未验证，后续调用结果由小云雀决定，不在绑定时消耗积分探测。用户选择允许本服务使用 1、7 或 30 天，这是本服务截止时间，不是上游密钥有效期。上游提前失效时需重新绑定。产品不提供密钥申请、提取或导出能力；需要用户已通过其可用的官方途径持有密钥，不能假设所有小云雀网页用户都能获取。
+
+每次绑定（包括重复填写相同密钥）都创建新账号归属，删除旧凭据密文并撤销旧 OAuth families、codes 和未完成授权 flow。旧任务、资源与 Canvas 状态不会迁移到新绑定；幂等 tombstone 仍保留，同一个幂等键不能复用。新绑定的生成额度只计算当前账号任务。已经提交上游的请求不能撤回。数据库 `xyq_uid` 在手动绑定中存放 `manual:<随机 UUID>`，仅用于兼容现有 schema，绝不是上游 UID；`binding_source=manual_unverified` 记录来源。
+
+PostgreSQL 保存用户、OIDC 身份、账号、OAuth flow/code/token family、凭据密文、资源归属、job metadata、Canvas 状态、限流桶与审计。Access/refresh token、浏览器 session、OIDC state/nonce 只保存 SHA-256 摘要；OIDC PKCE verifier 加密保存。登录检查签名、issuer、audience/azp、expiry、nonce、PKCE、state、当前浏览器及 flow，并轮换浏览器 cookie。凭据使用每账号随机 AES-256-GCM data key 加密，data key 再用 master key 包装，账号 ID 作为 AAD，防止密文跨账号搬移。数据库备份与 master key 必须分别保管。
 
 Access token 默认 1 小时；refresh family 默认 30 天且不滑动延长，每次 refresh 轮换，旧 refresh 重放会撤销整族 token。每个 MCP 请求解析 OAuth 用户，每次上游操作重新检查 family、当前账号和凭据。所有输入的 thread/run/asset/project 标识检查当前用户与账号归属，run 同时检查所属 thread；猜测 ID 返回 `resource_not_found`。HTTP MCP 使用 stateless transport，无跨用户 MCP session。
 
@@ -16,7 +20,9 @@ Access token 默认 1 小时；refresh family 默认 30 天且不滑动延长，
 
 ## 容器部署
 
-需要 Docker Compose、可解析至此主机的稳定公网域名、开放 80/443 端口。镜像包含 Go 服务与已校验发布源中的 Canvas runtime，Node 不会获得数据库 URL、主密钥或用户凭据。Compose 不向主机开放数据库和应用端口，只通过 Caddy 提供 TLS。
+需要 Docker Compose、可解析至此主机的稳定公网域名、开放 80/443 端口，以及可用的 OIDC 登录提供方（例如 Keycloak 或 Auth0）。在该提供方创建 confidential web application，启用 authorization code 和 PKCE S256，登记精确回调 `https://你的域名/account/callback`；提供方 discovery、authorize、token、JWKS 地址必须为 HTTPS。这里只需在所选 OIDC 提供方登记，不需要小云雀开发者后台。提供方不可用或配置缺失时服务拒绝启动。
+
+镜像包含 Go 服务与已校验发布源中的 Canvas runtime，Node 不会获得数据库 URL、主密钥或用户凭据。Compose 不向主机开放数据库和应用端口，只通过 Caddy 提供 TLS。
 
 在仓库根目录执行。以下变量由部署用 secret manager 注入；不要把真实值提交到仓库、PR、命令日志或聊天中：
 
@@ -25,6 +31,9 @@ export PUBLIC_HOST=mcp.example.com
 export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
 export PIPPIT_CREDENTIAL_MASTER_KEY="$(openssl rand -base64 32)"
 export PIPPIT_PUBLIC_CLIENTS_JSON='{"chatgpt-production":["https://chatgpt.com/connector_platform_oauth_redirect"]}'
+export PIPPIT_LOGIN_ISSUER=https://login.example.com/realms/pippit
+export PIPPIT_LOGIN_CLIENT_ID=pippit-service
+# PIPPIT_LOGIN_CLIENT_SECRET 由 secret manager 注入
 docker compose -f deploy/public/compose.yaml build app
 docker compose -f deploy/public/compose.yaml up -d postgres
 docker compose -f deploy/public/compose.yaml run --rm app mcp migrate up
@@ -43,6 +52,9 @@ curl --fail "https://${PUBLIC_HOST}/.well-known/oauth-authorization-server"
 | `DATABASE_URL` | 必填，PostgreSQL DSN |
 | `PIPPIT_CREDENTIAL_MASTER_KEY` | 必填，32 随机字节的标准 base64 |
 | `PIPPIT_PUBLIC_CLIENTS_JSON` | 必填，client ID 到精确 HTTPS redirect URI 数组的 JSON |
+| `PIPPIT_LOGIN_ISSUER` | 必填，独立 OIDC 提供方的精确 HTTPS issuer，可含路径 |
+| `PIPPIT_LOGIN_CLIENT_ID` | 必填，OIDC confidential web application client ID，与 ChatGPT client ID 不同 |
+| `PIPPIT_LOGIN_CLIENT_SECRET` | 必填，该 OIDC 客户端密钥，只保留在服务端 |
 | `PIPPIT_PUBLIC_CANVAS_SCRIPT` | 必填，`scripts/public-canvas-command.js` 绝对路径；同级需有 `canvas-command.js`，上级 `dist` 需有 runtime |
 | `PIPPIT_MCP_LISTEN` | `0.0.0.0:8787`；CLI `--listen` 可覆盖 |
 | `PIPPIT_OAUTH_ACCESS_TTL` | `1h`，范围 1 分钟至 1 小时 |
@@ -84,6 +96,8 @@ HTTP 每分钟全局 1200、每来源 IP 180；工具每用户每分钟合计 12
 
 迁移显式执行，事务与 advisory lock 防止多副本重复执行，checksum 不符拒绝启动。升级前备份 PostgreSQL 并验证恢复；普通应用回滚先回滚镜像，不能随意回退 schema。`mcp migrate down` 会删除全部 Public 表，仅可在确定销毁数据时设置 `PIPPIT_CONFIRM_DROP_PUBLIC_DATA=yes`，不是正常发布回滚步骤。
 
+迁移 002 添加 OIDC 身份与登录尝试表，保留 001 原始 checksum。升级会撤销旧浏览器 sessions、授权 flow/code/family 和 callback binding；旧上游身份不会自动认领为 OIDC 用户。旧记录保留供受控审计，本版不支持自动账号迁移。切换 OIDC issuer 或 subject 策略也会产生新的服务身份，不能直接按邮箱恢复原账号。
+
 当前 master key 版本为 `local-v1`。不能直接替换环境变量来轮换已有密文；本版不含在线 rewrap 命令。应采用受控维护窗口：先备份、解除现有凭据与连接，再换 key，要求用户重新绑定。恢复数据库时必须同时恢复对应版本密钥。密钥泄露时撤销连接并重新绑定，不能只恢复旧密文。
 
 ## 验收门禁
@@ -99,10 +113,6 @@ go test -race ./...
 go build ./...
 ```
 
-已有本地网页登录状态时，可以单独执行只读上游身份门禁。该测试只在内存中读取本机凭据并请求小云雀，不写入 Public 用户、不输出凭据或 UID、不消耗生成积分：
+`.github/workflows/ci.yml` 配置 PostgreSQL 17 + Go race/build/vet，并包含 Linux/Windows Node runtime 测试。集成测试使用 TLS OIDC fixture、真实 RSA 签名与 JWKS 验证，覆盖错误签名、issuer/audience/azp/nonce/expiry、callback 重放、独立身份恢复、手动密钥 CSRF、账号替换与隔离、旧 schema 升级。
 
-```bash
-PIPPIT_TEST_LIVE_XYQ_IDENTITY=1 go test -v ./internal/publicapp -run '^TestLiveXiaoyunqueIdentity$' -count=1
-```
-
-`.github/workflows/ci.yml` 配置 PostgreSQL 17 + Go race/build/vet，并包含 Linux/Windows Node runtime 测试。最新验收记录见 [public-mcp-acceptance.md](public-mcp-acceptance.md)。PR #1 在以下真实外部验证全部完成前保持 Draft：生产 HTTPS callback、真实 UID 校验、两个独立用户绑定/工具隔离、ChatGPT metadata/文件参数扫描、聊天生图到小云雀图生视频到 URL 返回、用户确认扣积分、撤销与重新连接，以及 macOS/Linux/Windows 基础启动验证。自动测试使用的上游 fixture 不等同于真实 ChatGPT 或小云雀验收。
+最新验收记录见 [public-mcp-acceptance.md](public-mcp-acceptance.md)。PR #1 在以下真实外部验证全部完成前保持 Draft：生产 OIDC 注册/登录/找回和 HTTPS callback、两个独立用户持有并绑定可用 Access Key、工具隔离、ChatGPT metadata/文件参数扫描、聊天生图到小云雀图生视频到 URL 返回、用户确认扣积分、撤销与重新连接，以及 macOS/Linux/Windows 基础启动验证。小云雀公网 callback 与 UID introspection 属于已退役设计，不再是当前方案依赖。自动测试使用的提供方和上游 fixture 不等同于真实验收。

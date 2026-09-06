@@ -23,22 +23,26 @@ import (
 )
 
 type Config struct {
-	Issuer, Listen, DatabaseURL                string
-	Key                                        []byte
-	Clients                                    map[string][]string
-	AccessTTL, RefreshTTL                      time.Duration
-	CacheDir                                   string
-	CacheTTL                                   time.Duration
-	CacheBytes, MinFreeBytes, MaxFileBytes     int64
-	MaxFiles, GlobalConcurrent, UserActiveJobs int
-	AllowChatGPTFakeIP                         bool
-	TrustedProxies                             []netip.Prefix
-	NodeBinary, CanvasScript                   string
+	Issuer, Listen, DatabaseURL                   string
+	Key                                           []byte
+	Clients                                       map[string][]string
+	AccessTTL, RefreshTTL                         time.Duration
+	CacheDir                                      string
+	CacheTTL                                      time.Duration
+	CacheBytes, MinFreeBytes, MaxFileBytes        int64
+	MaxFiles, GlobalConcurrent, UserActiveJobs    int
+	AllowChatGPTFakeIP                            bool
+	TrustedProxies                                []netip.Prefix
+	NodeBinary, CanvasScript                      string
+	LoginIssuer, LoginClientID, LoginClientSecret string
 }
 
 func ConfigFromEnv() (Config, error) {
 	c := Config{Issuer: strings.TrimRight(os.Getenv("PIPPIT_PUBLIC_ISSUER"), "/"), Listen: "0.0.0.0:8787", DatabaseURL: os.Getenv("DATABASE_URL"), AccessTTL: time.Hour, RefreshTTL: 30 * 24 * time.Hour, CacheDir: os.Getenv("PIPPIT_MEDIA_CACHE_DIR"), CacheTTL: 6 * time.Hour, CacheBytes: 4 << 30, MinFreeBytes: 1 << 30, MaxFileBytes: 200 << 20, MaxFiles: 12, GlobalConcurrent: 16, UserActiveJobs: 3, NodeBinary: "node", CanvasScript: os.Getenv("PIPPIT_PUBLIC_CANVAS_SCRIPT")}
 	var e error
+	c.LoginIssuer = os.Getenv("PIPPIT_LOGIN_ISSUER")
+	c.LoginClientID = os.Getenv("PIPPIT_LOGIN_CLIENT_ID")
+	c.LoginClientSecret = os.Getenv("PIPPIT_LOGIN_CLIENT_SECRET")
 	c.Key, e = base64.StdEncoding.DecodeString(os.Getenv("PIPPIT_CREDENTIAL_MASTER_KEY"))
 	if e != nil || len(c.Key) != 32 {
 		return c, errors.New("PIPPIT_CREDENTIAL_MASTER_KEY must be base64 encoding of 32 random bytes")
@@ -94,6 +98,9 @@ func ConfigFromEnv() (Config, error) {
 	return c, c.validate()
 }
 func (c Config) validate() error {
+	if !validLoginURL(c.LoginIssuer) || c.LoginClientID == "" || c.LoginClientSecret == "" {
+		return errors.New("public mode requires an HTTPS OIDC issuer, client ID and client secret")
+	}
 	u, e := url.Parse(c.Issuer)
 	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
 		return errors.New("PIPPIT_PUBLIC_ISSUER must be an HTTPS origin without path, query or userinfo")
@@ -124,18 +131,18 @@ func (c Config) validate() error {
 type App struct {
 	cfg           Config
 	store         *Store
-	authorization XiaoyunqueAuthorization
+	login         *serviceLogin
 	cache         *mcpserver.MediaCache
 	logger        *slog.Logger
 	clientFactory func(common.RequestAuthorizer) common.Client
 }
 
-func New(ctx context.Context, c Config, s *Store, authorization XiaoyunqueAuthorization, logger *slog.Logger) (*App, error) {
+func New(ctx context.Context, c Config, s *Store, logger *slog.Logger) (*App, error) {
 	if e := c.validate(); e != nil {
 		return nil, e
 	}
-	if s == nil || authorization == nil {
-		return nil, errors.New("store and upstream authorization required")
+	if s == nil {
+		return nil, errors.New("store required")
 	}
 	if e := s.Ready(ctx); e != nil {
 		return nil, errors.New("database migration required")
@@ -143,7 +150,11 @@ func New(ctx context.Context, c Config, s *Store, authorization XiaoyunqueAuthor
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	a := &App{cfg: c, store: s, authorization: authorization, logger: logger}
+	login, e := newServiceLogin(ctx, c)
+	if e != nil {
+		return nil, e
+	}
+	a := &App{cfg: c, store: s, login: login, logger: logger}
 	a.clientFactory = func(auth common.RequestAuthorizer) common.Client {
 		return common.NewHTTPClient(config.DefaultBaseURL, 2*time.Minute, auth)
 	}
@@ -169,9 +180,13 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /oauth/token", a.token)
 	mux.HandleFunc("POST /oauth/revoke", a.revoke)
 	mux.HandleFunc("POST /oauth/consent", a.consent)
-	mux.HandleFunc("POST /bind/start", a.bindStart)
-	mux.HandleFunc("POST /bind/callback", a.bindCallback)
-	mux.HandleFunc("OPTIONS /bind/callback", a.bindCallback)
+	mux.HandleFunc("POST /account/login", a.loginStart)
+	mux.HandleFunc("GET /account/callback", a.loginCallback)
+	mux.HandleFunc("GET /account/style.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		io.WriteString(w, consentCSS)
+	})
+	mux.HandleFunc("POST /bind/key", a.bindKey)
 	mux.HandleFunc("POST /account/logout", a.logout)
 	mux.HandleFunc("POST /account/unlink", a.unlink)
 	mux.HandleFunc("POST /account/delete", a.deleteAccount)
@@ -179,11 +194,18 @@ func (a *App) Handler() http.Handler {
 	return a.boundary(mux)
 }
 func (a *App) boundary(next http.Handler) http.Handler {
+	formOrigins := "'self' " + a.login.origin
+	for _, redirects := range a.cfg.Clients {
+		for _, raw := range redirects {
+			u, _ := url.Parse(raw)
+			formOrigins += " " + u.Scheme + "://" + u.Host
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'self' https://xyq.jianying.com; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action "+formOrigins+"; frame-ancestors 'none'; base-uri 'none'")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		if r.Method == "GET" || r.Method == "HEAD" {
@@ -239,7 +261,7 @@ type requestIDKey struct{}
 
 func safeRoute(path string) string {
 	switch path {
-	case "/mcp", "/oauth/authorize", "/oauth/token", "/oauth/revoke", "/oauth/consent", "/bind/start", "/bind/callback", "/account/logout", "/account/unlink", "/account/delete":
+	case "/mcp", "/oauth/authorize", "/oauth/token", "/oauth/revoke", "/oauth/consent", "/bind/key", "/account/login", "/account/callback", "/account/logout", "/account/unlink", "/account/delete":
 		return path
 	}
 	return "other"
@@ -320,7 +342,7 @@ func Run(ctx context.Context, c Config, out io.Writer) error {
 	defer s.Close()
 	logger := slog.New(slog.NewJSONHandler(out, nil))
 	initCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
-	a, e := New(initCtx, c, s, NewXiaoyunqueAuthorization(), logger)
+	a, e := New(initCtx, c, s, logger)
 	cancel()
 	if e != nil {
 		return e

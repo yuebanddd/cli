@@ -17,6 +17,11 @@ import (
 //go:embed migrations/001_public.sql
 var migration001 string
 
+//go:embed migrations/002_service_login.sql
+var migration002 string
+
+var migrations = []string{migration001, migration002}
+
 type Store struct {
 	DB    *sql.DB
 	vault *vault
@@ -53,28 +58,32 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, e = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS public_schema_migrations(version integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); e != nil {
 		return e
 	}
-	var checksum string
-	e = tx.QueryRowContext(ctx, `SELECT checksum FROM public_schema_migrations WHERE version=1`).Scan(&checksum)
-	if errors.Is(e, sql.ErrNoRows) {
-		if _, e = tx.ExecContext(ctx, migration001); e != nil {
+	for i, migration := range migrations {
+		var checksum string
+		e = tx.QueryRowContext(ctx, `SELECT checksum FROM public_schema_migrations WHERE version=$1`, i+1).Scan(&checksum)
+		if errors.Is(e, sql.ErrNoRows) {
+			if _, e = tx.ExecContext(ctx, migration); e != nil {
+				return e
+			}
+			_, e = tx.ExecContext(ctx, `INSERT INTO public_schema_migrations(version,checksum) VALUES($1,$2)`, i+1, digest(migration))
+		} else if e == nil && checksum != digest(migration) {
+			return errors.New("migration checksum mismatch")
+		}
+		if e != nil {
 			return e
 		}
-		_, e = tx.ExecContext(ctx, `INSERT INTO public_schema_migrations(version,checksum) VALUES(1,$1)`, digest(migration001))
-	} else if e == nil && checksum != digest(migration001) {
-		return errors.New("migration checksum mismatch")
-	}
-	if e != nil {
-		return e
 	}
 	return tx.Commit()
 }
 func (s *Store) Ready(ctx context.Context) error {
-	var c string
-	if e := s.DB.QueryRowContext(ctx, `SELECT checksum FROM public_schema_migrations WHERE version=1`).Scan(&c); e != nil {
-		return e
-	}
-	if c != digest(migration001) {
-		return errors.New("migration required")
+	for i, migration := range migrations {
+		var c string
+		if e := s.DB.QueryRowContext(ctx, `SELECT checksum FROM public_schema_migrations WHERE version=$1`, i+1).Scan(&c); e != nil {
+			return e
+		}
+		if c != digest(migration) {
+			return errors.New("migration required")
+		}
 	}
 	return nil
 }
@@ -164,6 +173,7 @@ func (s *Store) Cleanup(ctx context.Context) error {
 		`DELETE FROM work_leases WHERE expires_at<now()`,
 		`DELETE FROM browser_sessions WHERE expires_at<now()`,
 		`DELETE FROM oauth_flows WHERE expires_at<now()`,
+		`DELETE FROM login_attempts WHERE expires_at<now()`,
 		`DELETE FROM oauth_codes WHERE expires_at<now()-interval '1 day'`,
 		// Keep consumed refresh tokens until the family expires for replay detection.
 		`DELETE FROM oauth_families WHERE expires_at<now()`,
@@ -184,6 +194,9 @@ func (s *Store) Cleanup(ctx context.Context) error {
 //go:embed migrations/001_public.down.sql
 var migration001Down string
 
+//go:embed migrations/002_service_login.down.sql
+var migration002Down string
+
 func (s *Store) MigrateDown(ctx context.Context) error {
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -193,8 +206,10 @@ func (s *Store) MigrateDown(ctx context.Context) error {
 	if _, e = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(719024013)`); e != nil {
 		return e
 	}
-	if _, e = tx.ExecContext(ctx, migration001Down); e != nil {
-		return e
+	for _, migration := range []string{migration002Down, migration001Down} {
+		if _, e = tx.ExecContext(ctx, migration); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }

@@ -117,6 +117,15 @@ func (a *App) exchangeCode(ctx context.Context, f url.Values) (tokenResponse, er
 	var user, client, redirect, expected, resource, granted string
 	var expires time.Time
 	var consumed sql.NullTime
+	// Serialize issuance with unlink/rebind before locking the code. Otherwise a
+	// concurrent rebind could revoke existing families and miss this new family.
+	if e = tx.QueryRowContext(ctx, `SELECT user_id FROM oauth_codes WHERE code_hash=$1`, digest(f.Get("code"))).Scan(&user); e != nil {
+		return empty, errors.New("invalid_grant")
+	}
+	var locked string
+	if e = tx.QueryRowContext(ctx, `SELECT id FROM app_users WHERE id=$1 AND status='active' FOR UPDATE`, user).Scan(&locked); e != nil {
+		return empty, errors.New("invalid_grant")
+	}
 	e = tx.QueryRowContext(ctx, `SELECT user_id,client_id,redirect_uri,challenge,resource,scope,expires_at,consumed_at FROM oauth_codes WHERE code_hash=$1 FOR UPDATE`, digest(f.Get("code"))).Scan(&user, &client, &redirect, &expected, &resource, &granted, &expires, &consumed)
 	if e != nil || consumed.Valid || !expires.After(time.Now()) || client != f.Get("client_id") || redirect != f.Get("redirect_uri") || resource != f.Get("resource") || !equal(expected, challenge(verifier)) {
 		return empty, errors.New("invalid_grant")

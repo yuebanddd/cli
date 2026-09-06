@@ -28,6 +28,9 @@ services:
       DATABASE_URL: postgres://pippit:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/pippit?sslmode=disable
       PIPPIT_PUBLIC_ISSUER: https://${PUBLIC_HOST:?set PUBLIC_HOST}
       PIPPIT_PUBLIC_CLIENTS_JSON: ${PIPPIT_PUBLIC_CLIENTS_JSON:?set exact OAuth client and callbacks}
+      PIPPIT_LOGIN_ISSUER: ${PIPPIT_LOGIN_ISSUER:?set service login OIDC issuer}
+      PIPPIT_LOGIN_CLIENT_ID: ${PIPPIT_LOGIN_CLIENT_ID:?set service login OIDC client}
+      PIPPIT_LOGIN_CLIENT_SECRET: ${PIPPIT_LOGIN_CLIENT_SECRET:?set service login OIDC secret}
       PIPPIT_CREDENTIAL_MASTER_KEY: ${PIPPIT_CREDENTIAL_MASTER_KEY:?set 32-byte base64 key}
       PIPPIT_TRUSTED_PROXY_CIDRS: 172.30.19.10/32
     read_only: true
