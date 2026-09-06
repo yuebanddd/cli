@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pippit · ChatGPT 授权</title><link rel="stylesheet" href="/account/style.css"></head>
+<body><main>
+<header><p class="brand">Pippit MCP</p><h1>连接 ChatGPT 与小云雀</h1><p class="client">授权客户端：<strong>{{.Client}}</strong></p></header>
+{{if .User}}
+<section><h2>小云雀凭据</h2><p role="status">{{.Status}}</p>
+{{if .Bound}}<p class="notice">密钥尚未向小云雀验证。实际可用性和有效期以小云雀返回为准。</p>{{end}}
+<details {{if not .Bound}}open{{end}}><summary>{{if .Bound}}重新绑定 Access Key{{else}}绑定 Access Key{{end}}</summary>
+<form method="post" action="/bind/key" autocomplete="off">
+<input type="hidden" name="flow" value="{{.Flow}}"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="access-key">Access Key</label><input id="access-key" name="access_key" type="password" required maxlength="8192" autocomplete="off" spellcheck="false" autocapitalize="none">
+<label for="days">允许本服务使用</label><select id="days" name="days"><option value="1">1 天</option><option value="7" selected>7 天</option><option value="30">30 天</option></select>
+<label class="check"><input type="checkbox" name="confirm" value="bind" required><span>我授权本服务保存并使用此密钥。重新绑定会撤销原有 ChatGPT 授权，旧任务将无法通过新绑定查询。</span></label>
+<button type="submit">加密保存</button></form></details></section>
+<section><h2>ChatGPT 访问权限</h2><p>上传你提供的素材、创建和修改作品、读取任务结果。生成和编辑会消耗你的小云雀积分，产物由小云雀托管。</p>
+<form class="actions" method="post" action="/oauth/consent"><input type="hidden" name="flow" value="{{.Flow}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button name="decision" value="allow" {{if not .Bound}}disabled{{end}}>允许并返回 ChatGPT</button><button class="secondary" name="decision" value="deny">取消</button></form></section>
+<footer>
+<form method="post" action="/account/logout"><input type="hidden" name="flow" value="{{.Flow}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="secondary">退出本服务账号</button></form>
+<details><summary>账号与授权管理</summary>
+<form method="post" action="/account/unlink"><input type="hidden" name="flow" value="{{.Flow}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="danger">解除绑定并撤销全部授权</button></form>
+<form method="post" action="/account/delete"><input type="hidden" name="flow" value="{{.Flow}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><label class="check"><input type="checkbox" name="confirm" value="delete" required><span>永久删除本服务账号及记录，小云雀作品仍然保留。</span></label><button class="danger">删除本服务账号</button></form>
+</details></footer>
+{{else}}
+<section><h2>登录服务账号</h2><form method="post" action="/account/login"><input type="hidden" name="flow" value="{{.Flow}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>登录或注册</button></form></section>
+<form method="post" action="/oauth/consent"><input type="hidden" name="flow" value="{{.Flow}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="secondary" name="decision" value="deny">取消授权</button></form>
+{{end}}
+</main></body></html>

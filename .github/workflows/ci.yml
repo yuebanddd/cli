@@ -35,6 +35,22 @@ jobs:
         run: node scripts/prepare-canvas-runtime.test.js
 
   go:
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: publicapp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d publicapp_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://test:test@localhost:5432/publicapp_test?sslmode=disable
     name: Go tests
     runs-on: ubuntu-22.04
     timeout-minutes: 15
@@ -45,6 +61,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - run: go test ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: npm run prepare:canvas-runtime
+
+      - run: go test -race ./...
+
+      - run: go build ./...
 
       - run: go vet ./...

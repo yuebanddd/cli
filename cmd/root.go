@@ -11,6 +11,7 @@ import (
 	canvascmd "github.com/Pippit-dev/pippit-cli/cmd/canvas"
 	"github.com/Pippit-dev/pippit-cli/cmd/generate_image"
 	"github.com/Pippit-dev/pippit-cli/cmd/generate_video"
+	mcpservercmd "github.com/Pippit-dev/pippit-cli/cmd/mcpserver"
 	"github.com/Pippit-dev/pippit-cli/cmd/short_drama"
 	updatecmd "github.com/Pippit-dev/pippit-cli/cmd/update"
 	"github.com/Pippit-dev/pippit-cli/cmd/video_tool"
@@ -56,7 +57,7 @@ func newRootCommand(stdout, stderr io.Writer, runner *common.Runner) *cobra.Comm
 	root := &cobra.Command{
 		Use:           "pippit-tool-cli",
 		Short:         "Pippit CLI",
-		Long:          "Pippit CLI generates and processes videos and images, submits short-drama workflows, downloads generated assets, and updates the installed CLI package.",
+		Long:          "Pippit CLI generates and processes videos and images, submits short-drama workflows, serves MCP tools, downloads generated assets, and updates the installed CLI package.",
 		Version:       version.Current(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -78,6 +79,7 @@ func newRootCommand(stdout, stderr io.Writer, runner *common.Runner) *cobra.Comm
 	root.AddCommand(video_tool.NewSuperResolutionCommand(stdout, stderr, runner))
 	root.AddCommand(video_tool.NewEraseSubtitleCommand(stdout, stderr, runner))
 	root.AddCommand(short_drama.NewCommand(stdout, stderr, runner))
+	root.AddCommand(mcpservercmd.NewCommand(stdout, stderr, runner))
 	root.AddCommand(updatecmd.NewCommand(stdout, stderr))
 	localizeFlagErrors(root)
 	return root

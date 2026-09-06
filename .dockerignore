@@ -1,0 +1,8 @@
+.git
+.local
+node_modules
+dist
+bin
+*.tgz
+**/.env
+**/.env.*
